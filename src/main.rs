@@ -3,6 +3,7 @@ use std::error::Error;
 use pelite::pe64::PeFile;
 use pelite::FileMap;
 
+mod llvm_ir_gen;
 mod match_assembly;
 mod transforms;
 mod util;
@@ -12,8 +13,7 @@ mod vm_matchers;
 use clap::Parser;
 use vm_handler::{VmContext, VmHandler};
 
-use crate::util::handle_vm_call;
-use crate::vm_matchers::HandlerClass;
+use crate::{llvm_ir_gen::VmLifter, vm_matchers::HandlerClass};
 
 fn parse_hex_vm_call(input_str: &str) -> Result<u64, std::num::ParseIntError> {
     let str_trimmed = input_str.trim_start_matches("0x");
@@ -30,6 +30,8 @@ struct CommandLineArgs {
     /// call vm_entry
     #[clap(short, long, parse(try_from_str = parse_hex_vm_call))]
     pub vm_call_address: u64,
+    #[clap(long)]
+    pub gen_ir:          bool,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -40,22 +42,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     let pe_file = PeFile::from_bytes(&map)?;
     let pe_bytes = std::fs::read(input_file)?;
 
-    let (_, vm_entry_address) =
-        handle_vm_call(&pe_file, &pe_bytes, command_line_args.vm_call_address);
-    let mut handler_addresses = vec![vm_entry_address];
-
     let mut vm_context = VmContext::new(&pe_file, &pe_bytes, command_line_args.vm_call_address);
-    println!("{:#?}", vm_context);
 
+    let mut handlers = Vec::new();
+
+    println!("{:<15} | {:<30} | {}",
+             "VIP", "Disassembly", "Handler address");
     loop {
         let mut halt = false;
-
-        handler_addresses.push(vm_context.handler_address);
 
         let vm_handler = VmHandler::new(vm_context.handler_address, &pe_file, &pe_bytes);
         let handler_class = vm_handler.match_handler_class(&vm_context.register_allocation);
         let handler_address = vm_context.handler_address;
         let mut handler_instruction = vm_matchers::HandlerVmInstruction::Unknown;
+
+        let vip = vm_context.vip_value;
 
         match handler_class {
             HandlerClass::UnconditionalBranch => {
@@ -109,15 +110,29 @@ fn main() -> Result<(), Box<dyn Error>> {
                     vm_handler.match_no_operand_instructions(&vm_context.register_allocation);
             },
         }
-
-        println!("{:#x} -> {}", handler_address, handler_instruction);
+        handlers.push((vip, handler_instruction));
+        println!("{:<15} | {:<30} | {:#x}",
+                 format!("{:#x}", vip),
+                 format!("{}", handler_instruction),
+                 handler_address);
 
         if halt {
             break;
         }
-
-        // println!("{:#x?}", vm_context);
     }
+
+    if command_line_args.gen_ir {
+        println!("Generating llvm ir");
+        let vm_lifter = VmLifter::new();
+        let helper_stub = vm_lifter.create_helper_stub(vm_context.initial_vip);
+        vm_lifter.create_helper_function(vm_context.initial_vip);
+        vm_lifter.lift_into_helper_stub(&vm_context, &handlers, &helper_stub);
+        //vm_lifter.print_module();
+        vm_lifter.verify_module();
+        vm_lifter.output_module();
+    }
+
+    println!("{:?}", vm_context);
 
     Ok(())
 }

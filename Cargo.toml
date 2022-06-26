@@ -9,3 +9,4 @@ edition = "2021"
 iced-x86 = "*"
 clap = {version = "*", features = ["derive"]}
 pelite = "*"
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm14-0"] }

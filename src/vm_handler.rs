@@ -36,8 +36,12 @@ pub struct VmContext {
     pub rolling_key: u64,
     /// Current vip
     pub vip_value: u64,
+    /// Initial vip
+    pub initial_vip: u64,
     /// Next handler address
     pub handler_address: u64,
+    /// Reloc value
+    pub reloc_value: u64,
 }
 
 impl VmContext {
@@ -58,6 +62,7 @@ impl VmContext {
         // Get the initial_vip
         let initial_vip =
             vm_entry_handler.get_initial_vip(&register_allocation, pushed_val) + 0x100000000;
+        println!("The initial vip is -> {:x}", initial_vip);
         let mut vip = initial_vip;
 
         // Rolling key is initialized to the initial vip
@@ -94,6 +99,9 @@ impl VmContext {
             handler_base_address.wrapping_add(unencrypted_offset as i32 as i64 as u64);
 
         let vip_value = vip;
+
+        //TODO support different relocs
+        let reloc_value = 0;
         Self { register_allocation,
                vm_entry_address,
                pushed_val,
@@ -101,7 +109,9 @@ impl VmContext {
                push_order,
                rolling_key,
                vip_value,
-               handler_address: next_handler_address }
+               initial_vip,
+               handler_address: next_handler_address,
+               reloc_value }
     }
 
     pub fn disassemble_single_dword_operand(&mut self,
@@ -549,6 +559,30 @@ pub enum Registers {
     Flags,
 }
 
+impl Registers {
+    pub fn to_arg_index(&self) -> u64 {
+        match self {
+            Registers::Rax => 0,
+            Registers::Rbx => 1,
+            Registers::Rcx => 2,
+            Registers::Rdx => 3,
+            Registers::Rsi => 4,
+            Registers::Rdi => 5,
+            Registers::Rsp => 7,
+            Registers::Rbp => 6,
+            Registers::R8 => 8,
+            Registers::R9 => 9,
+            Registers::R10 => 10,
+            Registers::R11 => 11,
+            Registers::R12 => 12,
+            Registers::R13 => 13,
+            Registers::R14 => 14,
+            Registers::R15 => 15,
+            Registers::Flags => 16,
+        }
+    }
+}
+
 impl From<iced_x86::Register> for Registers {
     fn from(reg: iced_x86::Register) -> Self {
         match reg {
@@ -672,11 +706,11 @@ pub fn fetch_byte_vip(pe_file: &PeFile,
     let return_value;
 
     if direction_is_forwards {
-        return_value = read_bytes_at_va(pe_file, pe_bytes, *vip, 4).unwrap()[0];
+        return_value = read_bytes_at_va(pe_file, pe_bytes, *vip, 1).unwrap()[0];
         *vip += 1;
     } else {
         *vip -= 1;
-        return_value = read_bytes_at_va(pe_file, pe_bytes, *vip, 4).unwrap()[0];
+        return_value = read_bytes_at_va(pe_file, pe_bytes, *vip, 1).unwrap()[0];
     }
 
     return_value
