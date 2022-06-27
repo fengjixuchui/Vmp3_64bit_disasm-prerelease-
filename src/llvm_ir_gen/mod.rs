@@ -241,27 +241,57 @@ impl<'ctx> VmLifter<'ctx> {
 
         match size {
             8 => {
-                assert!(intra_register_offset == 0);
-
-                let sem_pop_vmreg64 = self.get_semantic("SEM_PUSH_VMREG_64");
+                let sem_push_vmreg64 = self.get_semantic("SEM_PUSH_VMREG_64");
 
                 self.builder
-                    .build_call(sem_pop_vmreg64, &[vsp.into(), vm_reg.into()], "");
+                    .build_call(sem_push_vmreg64, &[vsp.into(), vm_reg.into()], "");
             },
             4 => {
-                assert!(intra_register_offset == 4 || intra_register_offset == 0);
                 match intra_register_offset {
                     0 => {
-                        let sem_pop_vmreg32_low = self.get_semantic("SEM_PUSH_VMREG_32_LOW");
+                        let sem_push_vmreg32_low = self.get_semantic("SEM_PUSH_VMREG_32_LOW");
 
-                        self.builder.build_call(sem_pop_vmreg32_low,
+                        self.builder.build_call(sem_push_vmreg32_low,
                                                 &[vsp.into(), vm_reg.into()],
                                                 "");
                     },
                     4 => {
-                        let sem_pop_vmreg32_high = self.get_semantic("SEM_PUSH_VMREG_32_HIGH");
+                        let sem_push_vmreg32_high = self.get_semantic("SEM_PUSH_VMREG_32_HIGH");
 
-                        self.builder.build_call(sem_pop_vmreg32_high,
+                        self.builder.build_call(sem_push_vmreg32_high,
+                                                &[vsp.into(), vm_reg.into()],
+                                                "");
+                    },
+                    _ => unreachable!(),
+                }
+            },
+            2 => {
+                match intra_register_offset {
+                    0 => {
+                        let sem_push_vmreg16_lowlow = self.get_semantic("SEM_PUSH_VMREG_16_LOWLOW");
+
+                        self.builder.build_call(sem_push_vmreg16_lowlow,
+                                                &[vsp.into(), vm_reg.into()],
+                                                "");
+                    },
+                    2 => {
+                        let sem_push_vmreg16_lowhigh = self.get_semantic("SEM_PUSH_VMREG_16_LOWHIGH");
+
+                        self.builder.build_call(sem_push_vmreg16_lowhigh,
+                                                &[vsp.into(), vm_reg.into()],
+                                                "");
+                    },
+                    4 => {
+                        let sem_push_vmreg16_highlow = self.get_semantic("SEM_PUSH_VMREG_16_HIGHLOW");
+
+                        self.builder.build_call(sem_push_vmreg16_highlow,
+                                                &[vsp.into(), vm_reg.into()],
+                                                "");
+                    },
+                    6 => {
+                        let sem_push_vmreg16_highhigh = self.get_semantic("SEM_PUSH_VMREG_16_HIGHHIGH");
+
+                        self.builder.build_call(sem_push_vmreg16_highhigh,
                                                 &[vsp.into(), vm_reg.into()],
                                                 "");
                     },
@@ -312,6 +342,40 @@ impl<'ctx> VmLifter<'ctx> {
 
                         self.builder.build_call(sem_pop_vmreg32_high,
                                                 &[vsp.into(), select_vm_reg.into()],
+                                                "");
+                    },
+                    _ => unreachable!(),
+                }
+            },
+
+            2 => {
+                match intra_register_offset {
+                    0 => {
+                        let sem_pop_vmreg16_lowlow = self.get_semantic("SEM_POP_VMREG_16_LOWLOW");
+
+                        self.builder.build_call(sem_pop_vmreg16_lowlow,
+                                                &[vsp.into(), vm_regs.into()],
+                                                "");
+                    },
+                    2 => {
+                        let sem_pop_vmreg16_lowhigh = self.get_semantic("SEM_POP_VMREG_16_LOWHIGH");
+
+                        self.builder.build_call(sem_pop_vmreg16_lowhigh,
+                                                &[vsp.into(), vm_regs.into()],
+                                                "");
+                    },
+                    4 => {
+                        let sem_pop_vmreg16_highlow = self.get_semantic("SEM_POP_VMREG_16_HIGHLOW");
+
+                        self.builder.build_call(sem_pop_vmreg16_highlow,
+                                                &[vsp.into(), vm_regs.into()],
+                                                "");
+                    },
+                    6 => {
+                        let sem_pop_vmreg16_highhigh = self.get_semantic("SEM_POP_VMREG_16_HIGHHIGH");
+
+                        self.builder.build_call(sem_pop_vmreg16_highhigh,
+                                                &[vsp.into(), vm_regs.into()],
                                                 "");
                     },
                     _ => unreachable!(),

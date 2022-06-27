@@ -66,11 +66,18 @@ impl Display for HandlerVmInstruction {
                     format!("r{}", register_number)
                 },
                 4 => match inner_reg_offset {
-                    0 => format!("r{}_low", register_number),
-                    4 => format!("r{}_high", register_number),
+                    0 => format!("r{}_dword_0", register_number),
+                    4 => format!("r{}_dword_1", register_number),
                     _ => unimplemented!(),
                 },
-                _ => unimplemented!(),
+                2 => match inner_reg_offset {
+                    0 => format!("r{}_word_0", register_number),
+                    2 => format!("r{}_word_1", register_number),
+                    4 => format!("r{}_word_2", register_number),
+                    6 => format!("r{}_word_3", register_number),
+                    _ => unimplemented!(),
+                }
+                _ => unimplemented!("Size -> not implemented yet {}", size),
             }
         }
 
