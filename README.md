@@ -8,7 +8,7 @@ Comming soon !
 Currently does not disassemble any kind of branching, due to it not emulating or symbolically executing the vm instructions.
 Next releases will also allow specifying the vmcontext to allow disassembling from a branch location instead of only vmentry.
 
-This project was tested on vgk.sys (sha256 266ddd98fdd9df939993d947b0edb052a347316f)
+This project was tested on vgk.sys (sha-1 266ddd98fdd9df939993d947b0edb052a347316f)
 
 ## Example
 
