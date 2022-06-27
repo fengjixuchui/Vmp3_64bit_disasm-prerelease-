@@ -37,11 +37,15 @@ impl<'ctx> VmLifter<'ctx> {
         let context = Box::leak(Box::new(inkwell::context::Context::create()));
 
         let vmprotect_helpers = include_bytes!("VMProtectHelpers_64.ll");
+
         let memory_buffer =
             MemoryBuffer::create_from_memory_range_copy(vmprotect_helpers.as_slice(),
                                                         "vmp_helpers");
         let module = context.create_module_from_ir(memory_buffer).unwrap();
         let builder = context.create_builder();
+
+        let undef = module.get_global("__undef").unwrap();
+        undef.set_initializer(&context.i64_type().get_undef());
 
         Self { context,
                module,
@@ -344,8 +348,8 @@ impl<'ctx> VmLifter<'ctx> {
                 .build_call(sem_push_reg64, &[vsp.into(), reg_ptr.into()], "");
         }
 
-        // let exit_semantic = self.get_semantic("SEM_EXIT");
-        // self.builder.build_call(exit_semantic, &[vsp.into(), vip.into()], "");
+        let exit_semantic = self.get_semantic("SEM_EXIT");
+        self.builder.build_call(exit_semantic, &[vsp.into(), vip.into()], "");
     }
 
     fn lift_vm_entry(&self,
