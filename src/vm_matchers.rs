@@ -76,7 +76,7 @@ impl Display for HandlerVmInstruction {
                     4 => format!("r{}_word_2", register_number),
                     6 => format!("r{}_word_3", register_number),
                     _ => unimplemented!(),
-                }
+                },
                 _ => unimplemented!("Size -> not implemented yet {}", size),
             }
         }

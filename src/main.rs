@@ -48,13 +48,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut handlers = Vec::new();
 
-    println!("{:<15} | {:<30} | Handler address",
-             "VIP", "Disassembly");
+    println!("{:<15} | {:<30} | Handler address", "VIP", "Disassembly");
     loop {
         let mut halt = false;
-        println!("[Handler Address] -> {:#x}", vm_context.handler_address);
         let vm_handler = VmHandler::new(vm_context.handler_address, &pe_file, &pe_bytes);
-        
 
         let handler_class = vm_handler.match_handler_class(&vm_context.register_allocation);
         let handler_address = vm_context.handler_address;

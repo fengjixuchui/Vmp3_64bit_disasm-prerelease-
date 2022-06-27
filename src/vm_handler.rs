@@ -146,16 +146,20 @@ impl VmContext {
                                                self.vip_direction_forwards);
 
         let instruction_iter = vm_handler.instructions.iter();
-        // Skip it twice because dword arg
+        // Skip it once because dword arg
         let mut match_count = 0;
-        let mut instruction_iter = instruction_iter.skip_while(|insn| {
-                                                       if match_xor_32_rolling_key_source(insn,
-                                                                          &self.register_allocation)
-                                       {
-                                           match_count += 1;
-                                       }
+        let instruction_iter =
+            instruction_iter.skip_while(|insn| {
+                                if match_fetch_vip(insn, &self.register_allocation) {
+                                    match_count += 1;
+                                }
 
-                                                       match_count != 2
+                                match_count != 2
+                            });
+
+        let mut instruction_iter = instruction_iter.skip_while(|insn| {
+                                                       !match_xor_32_rolling_key_source(insn,
+                                                                       &self.register_allocation)
                                                    });
 
         let encrypted_reg = instruction_iter.next().unwrap().op0_register();
@@ -209,6 +213,10 @@ impl VmContext {
                                                self.vip_direction_forwards);
 
         let instruction_iter = vm_handler.instructions.iter();
+
+        let instruction_iter =
+            instruction_iter.skip_while(|insn| !match_fetch_vip(insn, &self.register_allocation));
+
         let mut instruction_iter = instruction_iter.skip_while(|insn| {
                                                        !match_xor_32_rolling_key_source(insn,
                                                                        &self.register_allocation)
@@ -263,7 +271,12 @@ impl VmContext {
                                                &mut self.vip_value,
                                                self.vip_direction_forwards);
 
+
         let instruction_iter = vm_handler.instructions.iter();
+        
+        let instruction_iter =
+            instruction_iter.skip_while(|insn| !match_fetch_vip(insn, &self.register_allocation));
+
         let mut instruction_iter = instruction_iter.skip_while(|insn| {
                                                        !match_xor_32_rolling_key_source(insn,
                                                                        &self.register_allocation)
@@ -319,6 +332,10 @@ impl VmContext {
                                                self.vip_direction_forwards);
 
         let instruction_iter = vm_handler.instructions.iter();
+
+        let instruction_iter =
+            instruction_iter.skip_while(|insn| !match_fetch_vip(insn, &self.register_allocation));
+
         let mut instruction_iter = instruction_iter.skip_while(|insn| {
                                                        !match_xor_32_rolling_key_source(insn,
                                                                        &self.register_allocation)
@@ -354,6 +371,10 @@ impl VmContext {
                                                self.vip_direction_forwards);
 
         let instruction_iter = vm_handler.instructions.iter();
+
+        let instruction_iter =
+            instruction_iter.skip_while(|insn| !match_fetch_vip(insn, &self.register_allocation));
+
         let mut instruction_iter = instruction_iter.skip_while(|insn| {
                                                        !match_xor_32_rolling_key_source(insn,
                                                                        &self.register_allocation)

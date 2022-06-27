@@ -5,8 +5,7 @@ use inkwell::{
     memory_buffer::MemoryBuffer,
     module::Module,
     values::{
-        BasicValue, BasicValueEnum, CallableValue, FunctionValue,
-        InstructionValue, PointerValue,
+        BasicValue, BasicValueEnum, CallableValue, FunctionValue, InstructionValue, PointerValue,
     },
 };
 
@@ -70,7 +69,9 @@ impl<'ctx> VmLifter<'ctx> {
         let param_names = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9",
                            "r10", "r11", "r12", "r13", "r14", "r15", "flags", "KEY_STUB",
                            "RET_ADDR", "REL_ADDR", "vsp", "vip", "vmregs", "slots"];
-        for (i, (&name, param)) in std::iter::zip(param_names.iter(), helper_stub.get_param_iter()).enumerate() {
+        for (i, (&name, param)) in
+            std::iter::zip(param_names.iter(), helper_stub.get_param_iter()).enumerate()
+        {
             param.set_name(name);
 
             if name != "KEY_STUB" && name != "RET_ADDR" && name != "REL_ADDR" {
@@ -97,7 +98,6 @@ impl<'ctx> VmLifter<'ctx> {
                                vm_context: &VmContext,
                                vm_instruction: &HandlerVmInstruction,
                                helper_stub: &FunctionValue) {
-
         println!("Lifting -> {}", vm_instruction);
         match vm_instruction {
             HandlerVmInstruction::Pop(size, reg_offset) => {
@@ -153,71 +153,58 @@ impl<'ctx> VmLifter<'ctx> {
     }
 
     fn lift_generic_handler(&self,
-                 size: usize,
-                 sem_base_name: &str,
-                 helper_stub: &FunctionValue) {
+                            size: usize,
+                            sem_base_name: &str,
+                            helper_stub: &FunctionValue) {
         let vsp = get_param_vsp(helper_stub);
-
 
         let semantic = self.get_semantic(&format!("SEM_{}_{}", sem_base_name, size * 8));
 
-        self.builder
-            .build_call(semantic, &[vsp.into()], "");
-
+        self.builder.build_call(semantic, &[vsp.into()], "");
     }
     fn lift_push_imm64(&self,
-                 imm64: u64,
-                 helper_stub: &FunctionValue) {
-
+                       imm64: u64,
+                       helper_stub: &FunctionValue) {
         let vsp = get_param_vsp(helper_stub);
         let i64_type = self.context.i64_type();
-
 
         let sem_push_imm64 = self.get_semantic("SEM_PUSH_IMM_64");
         let imm64_llvm = i64_type.const_int(imm64, false);
 
         self.builder
             .build_call(sem_push_imm64, &[vsp.into(), imm64_llvm.into()], "");
-
     }
 
     fn lift_push_imm32(&self,
-                 imm32: u32,
-                 helper_stub: &FunctionValue) {
-
+                       imm32: u32,
+                       helper_stub: &FunctionValue) {
         let vsp = get_param_vsp(helper_stub);
         let i32_type = self.context.i32_type();
-
 
         let sem_push_imm32 = self.get_semantic("SEM_PUSH_IMM_32");
         let imm32_llvm = i32_type.const_int(imm32 as u64, false);
 
         self.builder
             .build_call(sem_push_imm32, &[vsp.into(), imm32_llvm.into()], "");
-
     }
 
     fn lift_push_imm16(&self,
-                 imm16: u16,
-                 helper_stub: &FunctionValue) {
-
+                       imm16: u16,
+                       helper_stub: &FunctionValue) {
         let vsp = get_param_vsp(helper_stub);
         let i16_type = self.context.i16_type();
-
 
         let sem_push_imm16 = self.get_semantic("SEM_PUSH_IMM_16");
         let imm16_llvm = i16_type.const_int(imm16 as u64, false);
 
         self.builder
             .build_call(sem_push_imm16, &[vsp.into(), imm16_llvm.into()], "");
-
     }
 
     fn lift_push(&self,
                  size: usize,
                  reg_offset: u8,
                  helper_stub: &FunctionValue) {
-
         let vsp = get_param_vsp(helper_stub);
         let vm_regs = get_param_vm_regs(helper_stub);
         let i64_type = self.context.i64_type();
@@ -231,11 +218,10 @@ impl<'ctx> VmLifter<'ctx> {
                                    "vm_reg")
         };
 
-        let select_vm_reg = self.builder.build_pointer_cast(
-            select_vm_reg,
-            i64_type.ptr_type(inkwell::AddressSpace::Generic),
-            "",
-        );
+        let select_vm_reg =
+            self.builder.build_pointer_cast(select_vm_reg,
+                                            i64_type.ptr_type(inkwell::AddressSpace::Generic),
+                                            "");
 
         let vm_reg = self.builder.build_load(select_vm_reg, "");
 
@@ -246,57 +232,47 @@ impl<'ctx> VmLifter<'ctx> {
                 self.builder
                     .build_call(sem_push_vmreg64, &[vsp.into(), vm_reg.into()], "");
             },
-            4 => {
-                match intra_register_offset {
-                    0 => {
-                        let sem_push_vmreg32_low = self.get_semantic("SEM_PUSH_VMREG_32_LOW");
+            4 => match intra_register_offset {
+                0 => {
+                    let sem_push_vmreg32_low = self.get_semantic("SEM_PUSH_VMREG_32_LOW");
 
-                        self.builder.build_call(sem_push_vmreg32_low,
-                                                &[vsp.into(), vm_reg.into()],
-                                                "");
-                    },
-                    4 => {
-                        let sem_push_vmreg32_high = self.get_semantic("SEM_PUSH_VMREG_32_HIGH");
+                    self.builder
+                        .build_call(sem_push_vmreg32_low, &[vsp.into(), vm_reg.into()], "");
+                },
+                4 => {
+                    let sem_push_vmreg32_high = self.get_semantic("SEM_PUSH_VMREG_32_HIGH");
 
-                        self.builder.build_call(sem_push_vmreg32_high,
-                                                &[vsp.into(), vm_reg.into()],
-                                                "");
-                    },
-                    _ => unreachable!(),
-                }
+                    self.builder
+                        .build_call(sem_push_vmreg32_high, &[vsp.into(), vm_reg.into()], "");
+                },
+                _ => unreachable!(),
             },
-            2 => {
-                match intra_register_offset {
-                    0 => {
-                        let sem_push_vmreg16_lowlow = self.get_semantic("SEM_PUSH_VMREG_16_LOWLOW");
+            2 => match intra_register_offset {
+                0 => {
+                    let sem_push_vmreg16_lowlow = self.get_semantic("SEM_PUSH_VMREG_16_LOWLOW");
 
-                        self.builder.build_call(sem_push_vmreg16_lowlow,
-                                                &[vsp.into(), vm_reg.into()],
-                                                "");
-                    },
-                    2 => {
-                        let sem_push_vmreg16_lowhigh = self.get_semantic("SEM_PUSH_VMREG_16_LOWHIGH");
+                    self.builder
+                        .build_call(sem_push_vmreg16_lowlow, &[vsp.into(), vm_reg.into()], "");
+                },
+                2 => {
+                    let sem_push_vmreg16_lowhigh = self.get_semantic("SEM_PUSH_VMREG_16_LOWHIGH");
 
-                        self.builder.build_call(sem_push_vmreg16_lowhigh,
-                                                &[vsp.into(), vm_reg.into()],
-                                                "");
-                    },
-                    4 => {
-                        let sem_push_vmreg16_highlow = self.get_semantic("SEM_PUSH_VMREG_16_HIGHLOW");
+                    self.builder
+                        .build_call(sem_push_vmreg16_lowhigh, &[vsp.into(), vm_reg.into()], "");
+                },
+                4 => {
+                    let sem_push_vmreg16_highlow = self.get_semantic("SEM_PUSH_VMREG_16_HIGHLOW");
 
-                        self.builder.build_call(sem_push_vmreg16_highlow,
-                                                &[vsp.into(), vm_reg.into()],
-                                                "");
-                    },
-                    6 => {
-                        let sem_push_vmreg16_highhigh = self.get_semantic("SEM_PUSH_VMREG_16_HIGHHIGH");
+                    self.builder
+                        .build_call(sem_push_vmreg16_highlow, &[vsp.into(), vm_reg.into()], "");
+                },
+                6 => {
+                    let sem_push_vmreg16_highhigh = self.get_semantic("SEM_PUSH_VMREG_16_HIGHHIGH");
 
-                        self.builder.build_call(sem_push_vmreg16_highhigh,
-                                                &[vsp.into(), vm_reg.into()],
-                                                "");
-                    },
-                    _ => unreachable!(),
-                }
+                    self.builder
+                        .build_call(sem_push_vmreg16_highhigh, &[vsp.into(), vm_reg.into()], "");
+                },
+                _ => unreachable!(),
             },
             _ => todo!(),
         }
@@ -348,38 +324,32 @@ impl<'ctx> VmLifter<'ctx> {
                 }
             },
 
-            2 => {
-                match intra_register_offset {
-                    0 => {
-                        let sem_pop_vmreg16_lowlow = self.get_semantic("SEM_POP_VMREG_16_LOWLOW");
+            2 => match intra_register_offset {
+                0 => {
+                    let sem_pop_vmreg16_lowlow = self.get_semantic("SEM_POP_VMREG_16_LOWLOW");
 
-                        self.builder.build_call(sem_pop_vmreg16_lowlow,
-                                                &[vsp.into(), vm_regs.into()],
-                                                "");
-                    },
-                    2 => {
-                        let sem_pop_vmreg16_lowhigh = self.get_semantic("SEM_POP_VMREG_16_LOWHIGH");
+                    self.builder
+                        .build_call(sem_pop_vmreg16_lowlow, &[vsp.into(), vm_regs.into()], "");
+                },
+                2 => {
+                    let sem_pop_vmreg16_lowhigh = self.get_semantic("SEM_POP_VMREG_16_LOWHIGH");
 
-                        self.builder.build_call(sem_pop_vmreg16_lowhigh,
-                                                &[vsp.into(), vm_regs.into()],
-                                                "");
-                    },
-                    4 => {
-                        let sem_pop_vmreg16_highlow = self.get_semantic("SEM_POP_VMREG_16_HIGHLOW");
+                    self.builder
+                        .build_call(sem_pop_vmreg16_lowhigh, &[vsp.into(), vm_regs.into()], "");
+                },
+                4 => {
+                    let sem_pop_vmreg16_highlow = self.get_semantic("SEM_POP_VMREG_16_HIGHLOW");
 
-                        self.builder.build_call(sem_pop_vmreg16_highlow,
-                                                &[vsp.into(), vm_regs.into()],
-                                                "");
-                    },
-                    6 => {
-                        let sem_pop_vmreg16_highhigh = self.get_semantic("SEM_POP_VMREG_16_HIGHHIGH");
+                    self.builder
+                        .build_call(sem_pop_vmreg16_highlow, &[vsp.into(), vm_regs.into()], "");
+                },
+                6 => {
+                    let sem_pop_vmreg16_highhigh = self.get_semantic("SEM_POP_VMREG_16_HIGHHIGH");
 
-                        self.builder.build_call(sem_pop_vmreg16_highhigh,
-                                                &[vsp.into(), vm_regs.into()],
-                                                "");
-                    },
-                    _ => unreachable!(),
-                }
+                    self.builder
+                        .build_call(sem_pop_vmreg16_highhigh, &[vsp.into(), vm_regs.into()], "");
+                },
+                _ => unreachable!(),
             },
             _ => todo!(),
         }
@@ -398,9 +368,8 @@ impl<'ctx> VmLifter<'ctx> {
     }
 
     fn lift_vm_exit(&self,
-                     vm_context: &VmContext,
-                     stub_function: &FunctionValue) {
-
+                    vm_context: &VmContext,
+                    stub_function: &FunctionValue) {
         let vsp = get_param_vsp(stub_function);
         let vip = get_param_vip(stub_function);
 
@@ -412,7 +381,8 @@ impl<'ctx> VmLifter<'ctx> {
         }
 
         let exit_semantic = self.get_semantic("SEM_EXIT");
-        self.builder.build_call(exit_semantic, &[vsp.into(), vip.into()], "");
+        self.builder
+            .build_call(exit_semantic, &[vsp.into(), vip.into()], "");
     }
 
     fn lift_vm_entry(&self,
@@ -455,17 +425,20 @@ impl<'ctx> VmLifter<'ctx> {
                                       .get_function("HelperFunction")
                                       .expect("Could not find HelperFunction in llvm ir file");
 
-        let llvm_lifetime_start_p0i8 = self.module
-                                      .get_function("llvm.lifetime.start.p0i8")
-                                      .expect("Could not find llvm.lifetime.start.p0i8 in llvm ir file");
+        let llvm_lifetime_start_p0i8 =
+            self.module
+                .get_function("llvm.lifetime.start.p0i8")
+                .expect("Could not find llvm.lifetime.start.p0i8 in llvm ir file");
 
-        let llvm_lifetime_end_p0i8 = self.module
-                                      .get_function("llvm.lifetime.end.p0i8")
-                                      .expect("Could not find llvm.lifetime.end.p0i8 in llvm ir file");
+        let llvm_lifetime_end_p0i8 =
+            self.module
+                .get_function("llvm.lifetime.end.p0i8")
+                .expect("Could not find llvm.lifetime.end.p0i8 in llvm ir file");
 
-        let llvm_memset_p0i8_i64 = self.module
-                                      .get_function("llvm.memset.p0i8.i64")
-                                      .expect("Could not find llvm.memset.p0i8.i64 in llvm ir file");
+        let llvm_memset_p0i8_i64 =
+            self.module
+                .get_function("llvm.memset.p0i8.i64")
+                .expect("Could not find llvm.memset.p0i8.i64 in llvm ir file");
 
         let helper_function_type = helper_function_def.get_type();
 
@@ -477,7 +450,9 @@ impl<'ctx> VmLifter<'ctx> {
                            "r10", "r11", "r12", "r13", "r14", "r15", "flags", "KEY_STUB",
                            "RET_ADDR", "REL_ADDR"];
 
-        for (i, (&name, param)) in std::iter::zip(param_names.iter(), helper_function.get_param_iter()).enumerate() {
+        for (i, (&name, param)) in
+            std::iter::zip(param_names.iter(), helper_function.get_param_iter()).enumerate()
+        {
             param.set_name(name);
 
             if name != "KEY_STUB" && name != "RET_ADDR" && name != "REL_ADDR" {
@@ -508,20 +483,36 @@ impl<'ctx> VmLifter<'ctx> {
 
         let t0 = self.builder
                      .build_bitcast(vmregs, i8_type.ptr_type(inkwell::AddressSpace::Generic), "");
-        
-        self.builder.build_call(llvm_lifetime_start_p0i8, &[i64_type.const_int(240, false).into(), t0.into()], "");
-        self.builder.build_call(llvm_memset_p0i8_i64, &[t0.into(), i8_type.const_zero().into(), i64_type.const_int(240, false).into(), bool_type.const_zero().into()], "");
+
+        self.builder.build_call(llvm_lifetime_start_p0i8,
+                                &[i64_type.const_int(240, false).into(), t0.into()],
+                                "");
+        self.builder.build_call(llvm_memset_p0i8_i64,
+                                &[t0.into(),
+                                  i8_type.const_zero().into(),
+                                  i64_type.const_int(240, false).into(),
+                                  bool_type.const_zero().into()],
+                                "");
 
         let t1 = self.builder
                      .build_bitcast(slots, i8_type.ptr_type(inkwell::AddressSpace::Generic), "");
-        
-        self.builder.build_call(llvm_lifetime_start_p0i8, &[i64_type.const_int(240, false).into(), t1.into()], "");
-        self.builder.build_call(llvm_memset_p0i8_i64, &[t1.into(), i8_type.const_zero().into(), i64_type.const_int(240, false).into(), bool_type.const_zero().into()], "");
+
+        self.builder.build_call(llvm_lifetime_start_p0i8,
+                                &[i64_type.const_int(240, false).into(), t1.into()],
+                                "");
+        self.builder.build_call(llvm_memset_p0i8_i64,
+                                &[t1.into(),
+                                  i8_type.const_zero().into(),
+                                  i64_type.const_int(240, false).into(),
+                                  bool_type.const_zero().into()],
+                                "");
 
         let t2 = self.builder
                      .build_bitcast(vip, i8_type.ptr_type(inkwell::AddressSpace::Generic), "");
 
-        self.builder.build_call(llvm_lifetime_start_p0i8, &[i64_type.const_int(8, false).into(), t2.into()], "");
+        self.builder.build_call(llvm_lifetime_start_p0i8,
+                                &[i64_type.const_int(8, false).into(), t2.into()],
+                                "");
 
         let start_vip_llvm = i64_type.const_int(start_vip, false);
         self.builder.build_store(vip, start_vip_llvm);
@@ -575,9 +566,15 @@ impl<'ctx> VmLifter<'ctx> {
                                                 .unwrap()
                                                 .into_pointer_value(),
                                  t3);
-        self.builder.build_call(llvm_lifetime_end_p0i8, &[i64_type.const_int(8, false).into(), t2.into()], "");
-        self.builder.build_call(llvm_lifetime_end_p0i8, &[i64_type.const_int(240, false).into(), t1.into()], "");
-        self.builder.build_call(llvm_lifetime_end_p0i8, &[i64_type.const_int(240, false).into(), t0.into()], "");
+        self.builder.build_call(llvm_lifetime_end_p0i8,
+                                &[i64_type.const_int(8, false).into(), t2.into()],
+                                "");
+        self.builder.build_call(llvm_lifetime_end_p0i8,
+                                &[i64_type.const_int(240, false).into(), t1.into()],
+                                "");
+        self.builder.build_call(llvm_lifetime_end_p0i8,
+                                &[i64_type.const_int(240, false).into(), t0.into()],
+                                "");
 
         self.builder
             .build_return(Some(&call.try_as_basic_value().unwrap_left()));
