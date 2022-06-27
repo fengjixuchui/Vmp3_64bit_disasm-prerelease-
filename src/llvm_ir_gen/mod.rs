@@ -3,9 +3,9 @@ use inkwell::{
     builder::Builder,
     context::Context,
     memory_buffer::MemoryBuffer,
-    module::{Linkage, Module},
+    module::Module,
     values::{
-        BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallableValue, FunctionValue,
+        BasicValue, BasicValueEnum, CallableValue, FunctionValue,
         InstructionValue, PointerValue,
     },
 };
@@ -21,6 +21,7 @@ pub struct VmLifter<'ctx> {
 }
 // This leaks memory :(
 impl<'ctx> VmLifter<'ctx> {
+    #[allow(dead_code)]
     pub fn print_module(&self) {
         self.module.print_to_stderr();
     }
@@ -156,7 +157,6 @@ impl<'ctx> VmLifter<'ctx> {
                  sem_base_name: &str,
                  helper_stub: &FunctionValue) {
         let vsp = get_param_vsp(helper_stub);
-        let i64_type = self.context.i64_type();
 
 
         let semantic = self.get_semantic(&format!("SEM_{}_{}", sem_base_name, size * 8));
@@ -325,7 +325,7 @@ impl<'ctx> VmLifter<'ctx> {
                     -> CallableValue {
         let global_value = self.module
                                .get_global(name)
-                               .expect(&format!("Could not find SEMANTIC {}", name));
+                               .unwrap_or_else(|| panic!("Could not find SEMANTIC {}", name));
         let sem_pointer = self.builder
                               .build_load(global_value.as_pointer_value(), "")
                               .into_pointer_value();
@@ -336,7 +336,6 @@ impl<'ctx> VmLifter<'ctx> {
     fn lift_vm_exit(&self,
                      vm_context: &VmContext,
                      stub_function: &FunctionValue) {
-        let i64_type = self.context.i64_type();
 
         let vsp = get_param_vsp(stub_function);
         let vip = get_param_vip(stub_function);
@@ -530,6 +529,7 @@ fn get_param_from_reg<'a>(register: &Registers,
                .into_pointer_value()
 }
 
+#[allow(dead_code)]
 fn get_param_reloc<'a>(helper_stub: &FunctionValue<'a>) -> BasicValueEnum<'a> {
     helper_stub.get_nth_param(19).unwrap()
 }
@@ -546,6 +546,7 @@ fn get_param_vm_regs<'a>(helper_stub: &FunctionValue<'a>) -> PointerValue<'a> {
     helper_stub.get_nth_param(22).unwrap().into_pointer_value()
 }
 
+#[allow(dead_code)]
 fn get_operand_names(instruction: &InstructionValue) -> Vec<String> {
     let mut return_value = Vec::new();
     let num_operands = instruction.get_num_operands();

@@ -46,8 +46,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut handlers = Vec::new();
 
-    println!("{:<15} | {:<30} | {}",
-             "VIP", "Disassembly", "Handler address");
+    println!("{:<15} | {:<30} | Handler address",
+             "VIP", "Disassembly");
     loop {
         let mut halt = false;
 
@@ -111,6 +111,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             },
         }
         handlers.push((vip, handler_instruction));
+        // This shit don't work if I combine them so fuck it
         println!("{:<15} | {:<30} | {:#x}",
                  format!("{:#x}", vip),
                  format!("{}", handler_instruction),

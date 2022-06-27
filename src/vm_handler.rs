@@ -560,7 +560,7 @@ pub enum Registers {
 }
 
 impl Registers {
-    pub fn to_arg_index(&self) -> u64 {
+    pub fn to_arg_index(self) -> u64 {
         match self {
             Registers::Rax => 0,
             Registers::Rbx => 1,
