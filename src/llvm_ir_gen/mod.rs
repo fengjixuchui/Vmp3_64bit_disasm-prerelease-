@@ -4,11 +4,12 @@ use inkwell::{
     context::Context,
     memory_buffer::MemoryBuffer,
     module::Module,
+    passes::{PassManager, PassManagerBuilder},
     values::{
         BasicValue, BasicValueEnum, CallableValue, FunctionValue, InstructionValue, PointerValue,
-    }, passes::{PassManager, PassManagerBuilder},
+    },
 };
-use std::{cell::RefCell, borrow::Borrow};
+use std::{borrow::Borrow, cell::RefCell};
 
 use crate::{
     vm_handler::{Registers, VmContext},
@@ -35,15 +36,20 @@ impl<'ctx> VmLifter<'ctx> {
     }
 
     pub fn output_bitcode(&self) {
-        self.module.borrow().write_bitcode_to_path(std::path::Path::new("devirt.bc"));
+        self.module
+            .borrow()
+            .write_bitcode_to_path(std::path::Path::new("devirt.bc"));
     }
 
-    pub fn print_function(&self, func_name: &str) {
+    pub fn print_function(&self,
+                          func_name: &str) {
         let function = self.module.borrow().get_function(func_name);
 
         match function {
-            Some(func_val) => {func_val.print_to_stderr()},
-            None => {println!("Function not found {}", func_name)}
+            Some(func_val) => func_val.print_to_stderr(),
+            None => {
+                println!("Function not found {}", func_name)
+            },
         }
     }
 
@@ -85,37 +91,32 @@ impl<'ctx> VmLifter<'ctx> {
         module_passmanager.add_instruction_combining_pass();
         module_passmanager.add_cfg_simplification_pass();
         module_passmanager.add_strip_symbol_pass();
-        
 
-        for _ in 0..3 { 
+        for _ in 0 .. 3 {
             module_passmanager.run_on(&self.module.borrow());
         }
-        
+
         let i64_type = self.context.i64_type();
         let undef = self.module.borrow().get_global("__undef").unwrap();
         undef.set_initializer(&i64_type.get_undef());
         undef.set_constant(true);
 
-        for _ in 0..3 { 
+        for _ in 0 .. 3 {
             module_passmanager.run_on(&self.module.borrow());
         }
-        
+
         let i8_type = self.context.i8_type();
         let ram = self.module.borrow().get_global("RAM").unwrap();
         ram.set_initializer(&i8_type.array_type(0).const_array(&[]));
         ram.set_constant(true);
-        
-
-
-
     }
 
-    pub fn fix_arg_names(&self, 
+    pub fn fix_arg_names(&self,
                          helper_function_name: &str) {
-        
         let helper_function = self.module
                                   .borrow()
-                                  .get_function(helper_function_name).unwrap();
+                                  .get_function(helper_function_name)
+                                  .unwrap();
         let param_names = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9",
                            "r10", "r11", "r12", "r13", "r14", "r15", "flags", "KEY_STUB",
                            "RET_ADDR", "REL_ADDR"];

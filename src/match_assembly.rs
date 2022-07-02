@@ -67,9 +67,9 @@ pub fn match_mov_reg_source(instruction: &Instruction,
 }
 
 pub fn match_mov_reg2_in_reg1(instruction: &Instruction,
-                                reg1: Register,
-                                reg2: Register)
-                                -> Option<usize> {
+                              reg1: Register,
+                              reg2: Register)
+                              -> Option<usize> {
     let instruction_size = match instruction.code() {
         Code::Mov_rm8_r8 => 1,
         Code::Mov_rm16_r16 => 2,
@@ -512,7 +512,6 @@ pub fn match_sub_reg_by_amount(instruction: &Instruction,
 
     true
 }
-
 
 pub fn match_add_reg_by_amount(instruction: &Instruction,
                                reg: Register,

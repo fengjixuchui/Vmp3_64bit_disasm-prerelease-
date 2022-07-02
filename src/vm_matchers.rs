@@ -4,15 +4,16 @@ use iced_x86::{Code, Register};
 
 use crate::{
     match_assembly::{
-        match_add_reg_reg, match_add_vsp_by_amount, match_add_vsp_get_amount, match_and_reg_reg,
-        match_fetch_reg_any_size, match_fetch_vm_reg, match_fetch_zx_reg_any_size,
-        match_imul_reg_reg, match_mov_reg_source, match_mul_reg_reg, match_not_reg,
-        match_or_reg_reg, match_popfq, match_pushfq, match_ret, match_shr_reg_reg,
-        match_store_reg2_in_reg1, match_store_reg_any_size, match_sub_vsp_by_amount,
-        match_sub_vsp_get_amount, match_sub_reg_by_amount, match_mov_reg2_in_reg1, match_add_reg_by_amount, match_shl_reg_reg,
+        match_add_reg_by_amount, match_add_reg_reg, match_add_vsp_by_amount,
+        match_add_vsp_get_amount, match_and_reg_reg, match_fetch_reg_any_size, match_fetch_vm_reg,
+        match_fetch_zx_reg_any_size, match_imul_reg_reg, match_mov_reg2_in_reg1,
+        match_mov_reg_source, match_mul_reg_reg, match_not_reg, match_or_reg_reg, match_popfq,
+        match_pushfq, match_ret, match_shl_reg_reg, match_shr_reg_reg, match_store_reg2_in_reg1,
+        match_store_reg_any_size, match_sub_reg_by_amount, match_sub_vsp_by_amount,
+        match_sub_vsp_get_amount,
     },
     util::check_full_reg_written,
-    vm_handler::{Registers, VmHandler, VmRegisterAllocation, VmContext},
+    vm_handler::{Registers, VmContext, VmHandler, VmRegisterAllocation},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,8 +182,8 @@ impl VmHandler {
     }
 
     pub fn match_branch_instructions(&self,
-                                            vm_context: &mut VmContext)
-                                            -> HandlerVmInstruction {
+                                     vm_context: &mut VmContext)
+                                     -> HandlerVmInstruction {
         if vm_match_jmp_dec(self, vm_context) {
             return HandlerVmInstruction::JumpDec;
         }
@@ -327,10 +328,13 @@ impl VmHandler {
     }
 }
 fn vm_match_jmp_dec(vm_handler: &VmHandler,
-                    vm_context: &mut VmContext) -> bool {
-    
+                    vm_context: &mut VmContext)
+                    -> bool {
     let mut instruction_iter = vm_handler.instructions.iter();
-    let mov_to_vip = instruction_iter.find(|insn| match_fetch_reg_any_size(insn, vm_context.register_allocation.vsp.into()).is_some());
+    let mov_to_vip =
+        instruction_iter.find(|insn| {
+            match_fetch_reg_any_size(insn, vm_context.register_allocation.vsp.into()).is_some()
+        });
 
     if mov_to_vip.is_none() {
         return false;
@@ -340,44 +344,42 @@ fn vm_match_jmp_dec(vm_handler: &VmHandler,
 
     let add_vsp_instruction =
         instruction_iter.find(|insn| match_add_vsp_get_amount(insn, &vm_context.register_allocation).is_some());
-    
+
     if add_vsp_instruction.is_none() {
         return false;
     }
-    
+
     if add_vsp_instruction.unwrap().immediate32() != 8 {
         return false;
     }
-    
-    let mov_vip = instruction_iter.find(|insn| match_mov_reg2_in_reg1(insn, vm_context.register_allocation.vip.into(), new_vip).is_some());
+
+    let mov_vip =
+        instruction_iter.find(|insn| {
+                            match_mov_reg2_in_reg1(insn,
+                                                   vm_context.register_allocation.vip.into(),
+                                                   new_vip).is_some()
+                        });
     let new_vip = mov_vip.unwrap().op0_register().full_register();
 
     let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
-    
+
     if store_key_reg.is_none() {
-        return false
+        return false;
     }
 
     let new_key_register = store_key_reg.unwrap().op0_register();
 
-    let found = instruction_iter.any(|insn| match_sub_reg_by_amount(insn, new_vip, 4));
-
-    if found {
-        vm_context.register_allocation.vip = new_vip.into();
-        vm_context.register_allocation.key = new_key_register.into();
-
-        return true;
-    }
-
-
-    false
+    instruction_iter.any(|insn| match_sub_reg_by_amount(insn, new_vip, 4))
 }
 
 fn vm_match_jmp_inc(vm_handler: &VmHandler,
-                    vm_context: &mut VmContext) -> bool {
-    
+                    vm_context: &mut VmContext)
+                    -> bool {
     let mut instruction_iter = vm_handler.instructions.iter();
-    let mov_to_vip = instruction_iter.find(|insn| match_fetch_reg_any_size(insn, vm_context.register_allocation.vsp.into()).is_some());
+    let mov_to_vip =
+        instruction_iter.find(|insn| {
+            match_fetch_reg_any_size(insn, vm_context.register_allocation.vsp.into()).is_some()
+        });
 
     if mov_to_vip.is_none() {
         return false;
@@ -387,37 +389,32 @@ fn vm_match_jmp_inc(vm_handler: &VmHandler,
 
     let add_vsp_instruction =
         instruction_iter.find(|insn| match_add_vsp_get_amount(insn, &vm_context.register_allocation).is_some());
-    
+
     if add_vsp_instruction.is_none() {
         return false;
     }
-    
+
     if add_vsp_instruction.unwrap().immediate32() != 8 {
         return false;
     }
-    
-    let mov_vip = instruction_iter.find(|insn| match_mov_reg2_in_reg1(insn, vm_context.register_allocation.vip.into(), new_vip).is_some());
+
+    let mov_vip =
+        instruction_iter.find(|insn| {
+                            match_mov_reg2_in_reg1(insn,
+                                                   vm_context.register_allocation.vip.into(),
+                                                   new_vip).is_some()
+                        });
     let new_vip = mov_vip.unwrap().op0_register().full_register();
 
     let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
-    
+
     if store_key_reg.is_none() {
-        return false
+        return false;
     }
 
     let new_key_register = store_key_reg.unwrap().op0_register();
 
-    let found = instruction_iter.any(|insn| match_add_reg_by_amount(insn, new_vip, 4));
-
-    if found {
-        vm_context.register_allocation.vip = new_vip.into();
-        vm_context.register_allocation.key = new_key_register.into();
-
-        return true;
-    }
-
-
-    false
+    instruction_iter.any(|insn| match_add_reg_by_amount(insn, new_vip, 4))
 }
 
 fn vm_match_vm_reg_pop(vm_handler: &VmHandler,

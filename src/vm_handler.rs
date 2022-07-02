@@ -4,10 +4,11 @@ use crate::{
         match_xor_16_rolling_key_dest, match_xor_16_rolling_key_source,
         match_xor_32_rolling_key_source, match_xor_64_rolling_key_dest,
         match_xor_64_rolling_key_source, match_xor_8_rolling_key_dest,
-        match_xor_8_rolling_key_source,
+        match_xor_8_rolling_key_source, match_fetch_reg_any_size, match_mov_reg_source, match_mov_reg2_in_reg1, match_add_vsp_get_amount,
     },
     transforms::{get_transform_for_instruction, EmulateEncryption, EmulateTransform},
     util::*,
+    vm_matchers::{self, HandlerClass, HandlerVmInstruction},
 };
 use iced_x86::{Code, Instruction, OpKind};
 use pelite::pe64::PeFile;
@@ -47,10 +48,10 @@ pub struct VmContext {
 }
 
 impl VmContext {
-    pub fn new(pe_file: &PeFile,
-               pe_bytes: &[u8],
-               vm_call_address: u64)
-               -> Self {
+    pub fn new_from_vm_entry(pe_file: &PeFile,
+                             pe_bytes: &[u8],
+                             vm_call_address: u64)
+                             -> Self {
         let (pushed_val, vm_entry_address) = handle_vm_call(pe_file, pe_bytes, vm_call_address);
 
         let vm_entry_handler = VmHandler::new(vm_entry_address, pe_file, pe_bytes);
@@ -120,6 +121,160 @@ impl VmContext {
                vm_call_address }
     }
 
+    pub fn new_from_jump_handler(&self,
+                                 jump_handler_address: u64,
+                                 jump_target_vip: u64,
+                                 direction_is_forwards: bool,
+                                 pe_file: &PeFile,
+                                 pe_bytes: &[u8])
+                                 -> Self {
+
+        let mut new_vm_context = self.clone();
+
+        let vm_jump_handler = VmHandler::new(jump_handler_address, pe_file, pe_bytes);
+
+        vm_jump_handler.get_register_allocation_vm_jump(&mut new_vm_context.register_allocation);
+
+        // Rolling key is initialized to the initial vip
+        let mut vip = if direction_is_forwards {
+            jump_target_vip - 4
+        }
+        else {
+            jump_target_vip + 4
+        };
+
+        let mut rolling_key = vip;
+
+        let instruction_iter = vm_jump_handler.instructions.iter();
+        let mut instruction_iter = instruction_iter.skip_while(|insn| {
+                                                       !(insn.code() == Code::Lea_r64_m &&
+                                                         insn.memory_displacement64() != 0 &&
+                                                         insn.memory_displacement64() !=
+                                                         0x100000000)
+                                                   });
+
+        let handler_base_address = instruction_iter.next().unwrap().memory_displacement64();
+        let mut instruction_iter =
+            instruction_iter.skip_while(|insn| !match_fetch_vip(insn, &new_vm_context.register_allocation));
+
+        // Get the reg where the encrypted offset has been loaded into
+        let encrypted_offset_reg = instruction_iter.next().unwrap().op0_register();
+
+        let encrypted_offset = fetch_dword_vip(pe_file, pe_bytes, &mut vip, direction_is_forwards);
+
+        let encryption_iter = instruction_iter.take_while(|&insn| {
+                                                  !(match_push_rolling_key(insn,
+                                                                           &new_vm_context.register_allocation))
+                                              });
+
+        let unencrypted_offset = encrypted_offset.emulate_encryption(encryption_iter,
+                                                                     &mut rolling_key,
+                                                                     encrypted_offset_reg);
+
+        // hmmm yes
+        // movsxd offset_reg, offset_reg_32
+        // add handler_base, offset_reg
+        let next_handler_address =
+            handler_base_address.wrapping_add(unencrypted_offset as i32 as i64 as u64);
+
+        let vip_value = vip;
+
+
+        new_vm_context.vip_direction_forwards = direction_is_forwards;
+        new_vm_context.rolling_key = rolling_key;
+        new_vm_context.initial_vip = jump_target_vip;
+        new_vm_context.vip_value = vip_value;
+        new_vm_context.handler_address = next_handler_address;
+        new_vm_context
+    }
+
+    pub fn disassemble_context(&mut self,
+                               pe_file: &PeFile,
+                               pe_bytes: &[u8])
+                               -> Vec<(u64, HandlerVmInstruction)> {
+        let mut handlers = Vec::new();
+
+        println!("{:<15} | {:<30} | Handler address", "VIP", "Disassembly");
+        loop {
+            let mut halt = false;
+            let vm_handler = VmHandler::new(self.handler_address, pe_file, pe_bytes);
+
+            let handler_class = vm_handler.match_handler_class(&self.register_allocation);
+            let handler_address = self.handler_address;
+            #[allow(unused_assignments)]
+            let mut handler_instruction = vm_matchers::HandlerVmInstruction::Unknown;
+
+            let vip = self.vip_value;
+
+            match handler_class {
+                HandlerClass::UnconditionalBranch => {
+                    println!("Disassembled unconditional branch");
+                    println!("[Stopping]");
+
+                    handler_instruction = vm_handler.match_branch_instructions(self);
+
+                    halt = true;
+                },
+                HandlerClass::NoVipChange => {
+                    println!("Disassembled no vip change");
+                    println!("[Stopping]");
+                    handler_instruction =
+                        vm_handler.match_no_vip_change_instructions(&self.register_allocation);
+                    halt = true;
+                },
+                HandlerClass::ByteOperand => {
+                    //println!("Disassembled single byte operand");
+                    let byte_operand =
+                        self.disassemble_single_byte_operand(&vm_handler, &pe_file, &pe_bytes);
+                    handler_instruction =
+                        vm_handler.match_byte_operand_instructions(&self.register_allocation,
+                                                                   byte_operand);
+                },
+                HandlerClass::WordOperand => {
+                    //println!("Disassembled single word operand");
+                    let word_operand =
+                        self.disassemble_single_word_operand(&vm_handler, &pe_file, &pe_bytes);
+                    handler_instruction =
+                        vm_handler.match_word_operand_instructions(&self.register_allocation,
+                                                                   word_operand);
+                },
+                HandlerClass::DwordOperand => {
+                    //println!("Disassembled single dword operand");
+                    let dword_operand =
+                        self.disassemble_single_dword_operand(&vm_handler, &pe_file, &pe_bytes);
+                    handler_instruction =
+                        vm_handler.match_dword_operand_instructions(&self.register_allocation,
+                                                                    dword_operand);
+                },
+                HandlerClass::QwordOperand => {
+                    //println!("Disassembled single qword operand");
+                    let qword_operand =
+                        self.disassemble_single_qword_operand(&vm_handler, &pe_file, &pe_bytes);
+                    handler_instruction =
+                        vm_handler.match_qword_operand_instructions(&self.register_allocation,
+                                                                    qword_operand);
+                },
+                HandlerClass::NoOperand => {
+                    //println!("Disassembled no operand");
+                    self.disassemble_no_operand(&vm_handler, &pe_file, &pe_bytes);
+                    handler_instruction =
+                        vm_handler.match_no_operand_instructions(&self.register_allocation);
+                },
+            }
+            handlers.push((vip, handler_instruction));
+            // This shit don't work if I combine them so fuck it
+            println!("{:<15} | {:<30} | {:#x}",
+                     format!("{:#x}", vip),
+                     format!("{}", handler_instruction),
+                     handler_address);
+
+            if halt {
+                break;
+            }
+        }
+
+        handlers
+    }
     pub fn disassemble_single_dword_operand(&mut self,
                                             vm_handler: &VmHandler,
                                             pe_file: &PeFile,
@@ -489,6 +644,34 @@ impl VmHandler {
                                vsp,
                                key,
                                handler_address: handler_address_reg }
+    }
+
+    pub fn get_register_allocation_vm_jump(&self, old_register_allocation: &mut VmRegisterAllocation) {
+        let mut instruction_iter = self.instructions.iter();
+        let mov_to_vip =
+            instruction_iter.find(|insn| {
+                match_fetch_reg_any_size(insn, old_register_allocation.vsp.into()).is_some()
+            });
+
+        let new_vip = mov_to_vip.unwrap().op0_register().full_register();
+
+        let add_vsp_instruction =
+            instruction_iter.find(|insn| match_add_vsp_get_amount(insn, old_register_allocation).is_some());
+
+        let mov_vip =
+            instruction_iter.find(|insn| {
+                                match_mov_reg2_in_reg1(insn,
+                                                       old_register_allocation.vip.into(),
+                                                       new_vip).is_some()
+                            });
+        let new_vip = mov_vip.unwrap().op0_register().full_register();
+
+        let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
+
+        let new_key_register = store_key_reg.unwrap().op0_register();
+
+        old_register_allocation.vip = new_vip.into();
+        old_register_allocation.key = new_key_register.into();
     }
 
     pub fn get_push_order_vm_entry(&self) -> Vec<Registers> {
