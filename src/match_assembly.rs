@@ -59,11 +59,48 @@ pub fn match_mov_reg_source(instruction: &Instruction,
         return false;
     }
 
+    println!("{}", instruction);
+    println!("{:?}", register);
     if instruction.op1_register() != register {
         return false;
     }
 
     true
+}
+
+pub fn match_mov_reg2_in_reg1(instruction: &Instruction,
+                                reg1: Register,
+                                reg2: Register)
+                                -> Option<usize> {
+    let instruction_size = match instruction.code() {
+        Code::Mov_rm8_r8 => 1,
+        Code::Mov_rm16_r16 => 2,
+        Code::Mov_rm32_r32 => 4,
+        Code::Mov_rm64_r64 => 8,
+        Code::Mov_r8_rm8 => 1,
+        Code::Mov_r16_rm16 => 2,
+        Code::Mov_r32_rm32 => 4,
+        Code::Mov_r64_rm64 => 8,
+        _ => return None,
+    };
+
+    if instruction.op0_kind() != OpKind::Register {
+        return None;
+    }
+
+    if instruction.op1_kind() != OpKind::Register {
+        return None;
+    }
+
+    if instruction.op0_register() != reg1 {
+        return None;
+    }
+
+    if instruction.op1_register() != reg2 {
+        return None;
+    }
+
+    Some(instruction_size)
 }
 
 /// Return size of the store in bytes
@@ -187,6 +224,38 @@ pub fn match_add_reg_reg(instruction: &Instruction,
     }
 }
 
+pub fn match_mul_reg_reg(instruction: &Instruction,
+                         reg1: Register,
+                         reg2: Register)
+                         -> bool {
+    match instruction.code() {
+        Code::Mul_rm64 | Code::Mul_rm32 | Code::Mul_rm16 | Code::Mul_rm8
+            if (instruction.op0_register().full_register() == reg1 ||
+                instruction.op0_register().full_register() == reg2) =>
+        {
+            true
+        },
+
+        _ => false,
+    }
+}
+
+pub fn match_imul_reg_reg(instruction: &Instruction,
+                          reg1: Register,
+                          reg2: Register)
+                          -> bool {
+    match instruction.code() {
+        Code::Imul_rm64 | Code::Imul_rm32 | Code::Imul_rm16 | Code::Imul_rm8
+            if (instruction.op0_register().full_register() == reg1 ||
+                instruction.op0_register().full_register() == reg2) =>
+        {
+            true
+        },
+
+        _ => false,
+    }
+}
+
 /// Returns the size of the match in bytes if there is one
 pub fn match_fetch_reg_any_size(instruction: &Instruction,
                                 register: Register)
@@ -196,6 +265,12 @@ pub fn match_fetch_reg_any_size(instruction: &Instruction,
         Code::Mov_r32_rm32 if instruction.op1_kind() == OpKind::Memory => Some(4),
         Code::Mov_r16_rm16 if instruction.op1_kind() == OpKind::Memory => Some(2),
         Code::Mov_r8_rm8 if instruction.op1_kind() == OpKind::Memory => Some(1),
+        Code::Movzx_r16_rm8 if instruction.op1_kind() == OpKind::Memory => Some(2),
+        Code::Movzx_r32_rm8 if instruction.op1_kind() == OpKind::Memory => Some(4),
+        Code::Movzx_r64_rm8 if instruction.op1_kind() == OpKind::Memory => Some(8),
+        Code::Movzx_r16_rm16 if instruction.op1_kind() == OpKind::Memory => Some(2),
+        Code::Movzx_r32_rm16 if instruction.op1_kind() == OpKind::Memory => Some(4),
+        Code::Movzx_r64_rm16 if instruction.op1_kind() == OpKind::Memory => Some(8),
         _ => return None,
     };
 
@@ -233,6 +308,7 @@ pub fn match_fetch_zx_reg_any_size(instruction: &Instruction,
         None
     }
 }
+
 pub fn match_store_reg_any_size(instruction: &Instruction,
                                 register: Register)
                                 -> Option<usize> {
@@ -255,6 +331,40 @@ pub fn match_store_reg_any_size(instruction: &Instruction,
     }
 }
 
+pub fn match_fetch_vm_reg(instruction: &Instruction,
+                          index_reg: Register,
+                          vm_register_allocation: &VmRegisterAllocation)
+                          -> bool {
+    // Check the instruction opcode
+    if instruction.code() != Code::Mov_r64_rm64 &&
+       instruction.code() != Code::Mov_r32_rm32 &&
+       instruction.code() != Code::Mov_r16_rm16 &&
+       instruction.code() != Code::Mov_r8_rm8
+    {
+        return false;
+    }
+    // Check that the second operand is a memory type operand
+    if instruction.op1_kind() != OpKind::Memory {
+        return false;
+    }
+
+    // Check that the displacement is 0
+    if instruction.memory_displacement64() != 0x0 {
+        return false;
+    }
+
+    // Check that the index register is rsp
+    if instruction.memory_base() != Register::RSP {
+        return false;
+    }
+
+    // Check that the index register is index_reg
+    if instruction.memory_index() != index_reg {
+        return false;
+    }
+
+    true
+}
 pub fn match_fetch_encrypted_vip(instruction: &Instruction,
                                  vm_register_allocation: &VmRegisterAllocation)
                                  -> bool {
@@ -368,6 +478,28 @@ pub fn match_sub_vsp_by_amount(instruction: &Instruction,
     true
 }
 
+pub fn match_sub_reg_by_amount(instruction: &Instruction,
+                               reg: Register,
+                               amount: u32)
+                               -> bool {
+    if instruction.code() != Code::Sub_rm64_imm32 {
+        return false;
+    }
+
+    if instruction.immediate32() != amount {
+        return false;
+    }
+
+    if instruction.op0_kind() != OpKind::Register {
+        return false;
+    }
+
+    if instruction.op0_register().full_register() != reg.full_register() {
+        return false;
+    }
+
+    true
+}
 pub fn match_sub_vsp_get_amount(instruction: &Instruction,
                                 vm_register_allocation: &VmRegisterAllocation)
                                 -> Option<u32> {

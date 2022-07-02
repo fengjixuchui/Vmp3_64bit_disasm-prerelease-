@@ -6,8 +6,9 @@ use inkwell::{
     module::Module,
     values::{
         BasicValue, BasicValueEnum, CallableValue, FunctionValue, InstructionValue, PointerValue,
-    },
+    }, passes::{PassManager, PassManagerBuilder},
 };
+use std::{cell::RefCell, borrow::Borrow};
 
 use crate::{
     vm_handler::{Registers, VmContext},
@@ -15,22 +16,35 @@ use crate::{
 };
 pub struct VmLifter<'ctx> {
     context: &'ctx Context,
-    module:  Module<'ctx>,
+    module:  RefCell<Module<'ctx>>,
     builder: Builder<'ctx>,
 }
 // This leaks memory :(
 impl<'ctx> VmLifter<'ctx> {
     #[allow(dead_code)]
     pub fn print_module(&self) {
-        self.module.print_to_stderr();
+        self.module.borrow().print_to_stderr();
     }
 
     pub fn verify_module(&self) {
-        self.module.verify().unwrap();
+        self.module.borrow().verify().unwrap();
     }
 
     pub fn output_module(&self) {
-        self.module.print_to_file("devirt.ll").unwrap();
+        self.module.borrow().print_to_file("devirt.ll").unwrap();
+    }
+
+    pub fn output_bitcode(&self) {
+        self.module.borrow().write_bitcode_to_path(std::path::Path::new("devirt.bc"));
+    }
+
+    pub fn print_function(&self, func_name: &str) {
+        let function = self.module.borrow().get_function(func_name);
+
+        match function {
+            Some(func_val) => {func_val.print_to_stderr()},
+            None => {println!("Function not found {}", func_name)}
+        }
     }
 
     pub fn new() -> Self {
@@ -48,19 +62,85 @@ impl<'ctx> VmLifter<'ctx> {
         undef.set_initializer(&context.i64_type().get_undef());
 
         Self { context,
-               module,
+               module: RefCell::new(module),
                builder }
     }
 
+    pub fn optimize_module(&self) {
+        let module_passmanager: PassManager<Module<'_>> = PassManager::create(());
+
+        module_passmanager.add_always_inliner_pass();
+        module_passmanager.add_basic_alias_analysis_pass();
+        module_passmanager.add_type_based_alias_analysis_pass();
+        module_passmanager.add_scoped_no_alias_aa_pass();
+        module_passmanager.add_cfg_simplification_pass();
+        module_passmanager.add_scalar_repl_aggregates_pass();
+        module_passmanager.add_early_cse_mem_ssa_pass();
+        module_passmanager.add_instruction_simplify_pass();
+        module_passmanager.add_instruction_combining_pass();
+        module_passmanager.add_cfg_simplification_pass();
+        module_passmanager.add_gvn_pass();
+        module_passmanager.add_dead_store_elimination_pass();
+        module_passmanager.add_instruction_simplify_pass();
+        module_passmanager.add_instruction_combining_pass();
+        module_passmanager.add_cfg_simplification_pass();
+        module_passmanager.add_strip_symbol_pass();
+        
+
+        for _ in 0..3 { 
+            module_passmanager.run_on(&self.module.borrow());
+        }
+        
+        let i64_type = self.context.i64_type();
+        let undef = self.module.borrow().get_global("__undef").unwrap();
+        undef.set_initializer(&i64_type.get_undef());
+        undef.set_constant(true);
+
+        for _ in 0..3 { 
+            module_passmanager.run_on(&self.module.borrow());
+        }
+        
+        let i8_type = self.context.i8_type();
+        let ram = self.module.borrow().get_global("RAM").unwrap();
+        ram.set_initializer(&i8_type.array_type(0).const_array(&[]));
+        ram.set_constant(true);
+        
+
+
+
+    }
+
+    pub fn fix_arg_names(&self, 
+                         helper_function_name: &str) {
+        
+        let helper_function = self.module
+                                  .borrow()
+                                  .get_function(helper_function_name).unwrap();
+        let param_names = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9",
+                           "r10", "r11", "r12", "r13", "r14", "r15", "flags", "KEY_STUB",
+                           "RET_ADDR", "REL_ADDR"];
+
+        for (i, (&name, param)) in
+            std::iter::zip(param_names.iter(), helper_function.get_param_iter()).enumerate()
+        {
+            param.set_name(name);
+
+            if name != "KEY_STUB" && name != "RET_ADDR" && name != "REL_ADDR" {
+                helper_function.add_attribute(AttributeLoc::Param(i as _), self.context.create_enum_attribute(Attribute::get_named_enum_kind_id("noalias"), 0));
+            }
+        }
+    }
     pub fn create_helper_stub(&self,
                               start_vip: u64)
                               -> FunctionValue {
         let helper_stub_def = self.module
+                                  .borrow()
                                   .get_function("HelperStub")
                                   .expect("Could not find HelperStub in llvm ir file");
         let helper_stub_type = helper_stub_def.get_type();
 
         let helper_stub = self.module
+                              .borrow()
                               .add_function(&format!("helperstub_{:x}", start_vip),
                                             helper_stub_type,
                                             None);
@@ -98,7 +178,7 @@ impl<'ctx> VmLifter<'ctx> {
                                vm_context: &VmContext,
                                vm_instruction: &HandlerVmInstruction,
                                helper_stub: &FunctionValue) {
-        println!("Lifting -> {}", vm_instruction);
+        // println!("Lifting -> {}", vm_instruction);
         match vm_instruction {
             HandlerVmInstruction::Pop(size, reg_offset) => {
                 self.lift_pop(*size, *reg_offset, helper_stub);
@@ -115,6 +195,9 @@ impl<'ctx> VmLifter<'ctx> {
             HandlerVmInstruction::PushImm16(imm) => {
                 self.lift_push_imm16(*imm, helper_stub);
             },
+            HandlerVmInstruction::PushImm8(imm) => {
+                self.lift_push_imm16(*imm as u16, helper_stub);
+            },
             HandlerVmInstruction::PushVsp(size) => {
                 self.lift_generic_handler(*size, "PUSH_VSP", helper_stub);
             },
@@ -123,6 +206,12 @@ impl<'ctx> VmLifter<'ctx> {
             },
             HandlerVmInstruction::Add(size) => {
                 self.lift_generic_handler(*size, "ADD", helper_stub);
+            },
+            HandlerVmInstruction::Mul(size) => {
+                self.lift_generic_handler(*size, "MUL", helper_stub);
+            },
+            HandlerVmInstruction::Imul(size) => {
+                self.lift_generic_handler(*size, "IMUL", helper_stub);
             },
             HandlerVmInstruction::Shr(size) => {
                 self.lift_generic_handler(*size, "SHR", helper_stub);
@@ -142,6 +231,9 @@ impl<'ctx> VmLifter<'ctx> {
             HandlerVmInstruction::VmExit => {
                 self.lift_vm_exit(vm_context, helper_stub);
             },
+            HandlerVmInstruction::JumpDec => {
+                self.lift_jump_sem(vm_context, helper_stub, "JUMP_DEC");
+            },
             HandlerVmInstruction::UnknownByteOperand => todo!("Unkwnown handler"),
             HandlerVmInstruction::UnknownWordOperand => todo!("Unkwnown handler"),
             HandlerVmInstruction::UnknownDwordOperand => todo!("Unkwnown handler"),
@@ -150,6 +242,18 @@ impl<'ctx> VmLifter<'ctx> {
             HandlerVmInstruction::UnknownNoVipChange => todo!("Unkwnown handler"),
             HandlerVmInstruction::Unknown => todo!("Unkwnown handler"),
         }
+    }
+
+    fn lift_jump_sem(&self,
+                     vm_context: &VmContext,
+                     stub_function: &FunctionValue,
+                     semantic_name: &str) {
+        let vsp = get_param_vsp(stub_function);
+        let vip = get_param_vip(stub_function);
+
+        let a_semantic = self.get_semantic(&format!("SEM_{}", semantic_name));
+        self.builder
+            .build_call(a_semantic, &[vsp.into(), vip.into()], "");
     }
 
     fn lift_generic_handler(&self,
@@ -358,6 +462,7 @@ impl<'ctx> VmLifter<'ctx> {
                     name: &str)
                     -> CallableValue {
         let global_value = self.module
+                               .borrow()
                                .get_global(name)
                                .unwrap_or_else(|| panic!("Could not find SEMANTIC {}", name));
         let sem_pointer = self.builder
@@ -389,9 +494,26 @@ impl<'ctx> VmLifter<'ctx> {
                      vm_context: &VmContext,
                      stub_function: &FunctionValue) {
         let i64_type = self.context.i64_type();
+        let vsp = get_param_vsp(stub_function);
+
+        // This type does not implement clone that's the reason for resolving it three
+        // times :) Yes this is fucking retarded :)
+        let sem_push_imm64 = self.get_semantic("SEM_PUSH_IMM_64");
+        let pushed_key = i64_type.const_int(vm_context.pushed_val, false);
+
+        self.builder
+            .build_call(sem_push_imm64, &[vsp.into(), pushed_key.into()], "");
+
+        // This type does not implement clone that's the reason for resolving it three
+        // times :)
+        let sem_push_imm64 = self.get_semantic("SEM_PUSH_IMM_64");
+
+        let ret_addr = i64_type.const_int(vm_context.vm_call_address + 10, false);
         let reloc = i64_type.const_int(vm_context.reloc_value, false);
 
-        let vsp = get_param_vsp(stub_function);
+        self.builder
+            .build_call(sem_push_imm64, &[vsp.into(), ret_addr.into()], "");
+
         for reg in vm_context.push_order.iter() {
             let sem_push_reg64 = self.get_semantic("SEM_PUSH_REG_64");
             let reg_ptr = get_param_from_reg(reg, stub_function);
@@ -399,6 +521,9 @@ impl<'ctx> VmLifter<'ctx> {
             self.builder
                 .build_call(sem_push_reg64, &[vsp.into(), reg_value.into()], "");
         }
+
+        // This type does not implement clone that's the reason for resolving it three
+        // times :)
         let sem_push_imm64 = self.get_semantic("SEM_PUSH_IMM_64");
         self.builder
             .build_call(sem_push_imm64, &[vsp.into(), reloc.into()], "");
@@ -422,28 +547,33 @@ impl<'ctx> VmLifter<'ctx> {
     pub fn create_helper_function(&self,
                                   start_vip: u64) {
         let helper_function_def = self.module
+                                      .borrow()
                                       .get_function("HelperFunction")
                                       .expect("Could not find HelperFunction in llvm ir file");
 
         let llvm_lifetime_start_p0i8 =
             self.module
+                .borrow()
                 .get_function("llvm.lifetime.start.p0i8")
                 .expect("Could not find llvm.lifetime.start.p0i8 in llvm ir file");
 
         let llvm_lifetime_end_p0i8 =
             self.module
+                .borrow()
                 .get_function("llvm.lifetime.end.p0i8")
                 .expect("Could not find llvm.lifetime.end.p0i8 in llvm ir file");
 
         let llvm_memset_p0i8_i64 =
             self.module
+                .borrow()
                 .get_function("llvm.memset.p0i8.i64")
                 .expect("Could not find llvm.memset.p0i8.i64 in llvm ir file");
 
         let helper_function_type = helper_function_def.get_type();
 
         let helper_function = self.module
-                                  .add_function(&format!("HelperFunction_{:x}", start_vip),
+                                  .borrow()
+                                  .add_function(&format!("helperfunction_{:x}", start_vip),
                                                 helper_function_type,
                                                 None);
         let param_names = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9",
@@ -469,6 +599,7 @@ impl<'ctx> VmLifter<'ctx> {
         let bool_type = self.context.bool_type();
 
         let virtual_register_type = self.module
+                                        .borrow()
                                         .get_struct_type("struct.VirtualRegister")
                                         .unwrap();
         let virtual_register_array_type = virtual_register_type.array_type(30);
@@ -529,6 +660,7 @@ impl<'ctx> VmLifter<'ctx> {
         };
 
         let helper_stub = self.module
+                              .borrow()
                               .get_function(&format!("helperstub_{:x}", start_vip))
                               .unwrap();
 
@@ -559,7 +691,7 @@ impl<'ctx> VmLifter<'ctx> {
                                              array_decay1.into()],
                                            "call");
 
-        let undef = self.module.get_global("__undef").unwrap();
+        let undef = self.module.borrow().get_global("__undef").unwrap();
         let t3 = self.builder.build_load(undef.as_pointer_value(), "");
 
         self.builder.build_store(helper_function.get_nth_param(16)

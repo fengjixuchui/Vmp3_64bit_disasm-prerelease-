@@ -1,3 +1,3 @@
 fn main() {
-    println!("cargo:rustc-link-arg=-lLLVM-14");
+    println!("cargo:rustc-link-arg=-lLLVM-13");
 }

@@ -42,6 +42,8 @@ pub struct VmContext {
     pub handler_address: u64,
     /// Reloc value
     pub reloc_value: u64,
+    /// Address of call into the vm
+    pub vm_call_address: u64,
 }
 
 impl VmContext {
@@ -72,9 +74,12 @@ impl VmContext {
         let instruction_iter = vm_entry_handler.instructions.iter();
         let mut instruction_iter = instruction_iter.skip_while(|insn| {
                                                        !(insn.code() == Code::Lea_r64_m &&
-                                                         insn.memory_displacement64() != 0)
+                                                         insn.memory_displacement64() != 0 &&
+                                                         insn.memory_displacement64() !=
+                                                         0x100000000)
                                                    });
         let handler_base_address = instruction_iter.next().unwrap().memory_displacement64();
+        println!("{:x}", handler_base_address);
         let mut instruction_iter =
             instruction_iter.skip_while(|insn| !match_fetch_vip(insn, &register_allocation));
 
@@ -111,7 +116,8 @@ impl VmContext {
                vip_value,
                initial_vip,
                handler_address: next_handler_address,
-               reloc_value }
+               reloc_value,
+               vm_call_address }
     }
 
     pub fn disassemble_single_dword_operand(&mut self,
@@ -271,9 +277,8 @@ impl VmContext {
                                                &mut self.vip_value,
                                                self.vip_direction_forwards);
 
-
         let instruction_iter = vm_handler.instructions.iter();
-        
+
         let instruction_iter =
             instruction_iter.skip_while(|insn| !match_fetch_vip(insn, &self.register_allocation));
 
