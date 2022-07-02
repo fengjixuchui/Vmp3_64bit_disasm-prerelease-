@@ -216,6 +216,9 @@ impl<'ctx> VmLifter<'ctx> {
             HandlerVmInstruction::Shr(size) => {
                 self.lift_generic_handler(*size, "SHR", helper_stub);
             },
+            HandlerVmInstruction::Shl(size) => {
+                self.lift_generic_handler(*size, "SHL", helper_stub);
+            },
             HandlerVmInstruction::Nand(size) => {
                 self.lift_generic_handler(*size, "NAND", helper_stub);
             },
@@ -233,6 +236,9 @@ impl<'ctx> VmLifter<'ctx> {
             },
             HandlerVmInstruction::JumpDec => {
                 self.lift_jump_sem(vm_context, helper_stub, "JUMP_DEC");
+            },
+            HandlerVmInstruction::JumpInc => {
+                self.lift_jump_sem(vm_context, helper_stub, "JUMP_INC");
             },
             HandlerVmInstruction::UnknownByteOperand => todo!("Unkwnown handler"),
             HandlerVmInstruction::UnknownWordOperand => todo!("Unkwnown handler"),

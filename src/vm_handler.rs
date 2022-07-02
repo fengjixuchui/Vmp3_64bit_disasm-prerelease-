@@ -12,7 +12,7 @@ use crate::{
 use iced_x86::{Code, Instruction, OpKind};
 use pelite::pe64::PeFile;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VmRegisterAllocation {
     pub vip: Registers,
     pub vsp: Registers,
@@ -20,7 +20,7 @@ pub struct VmRegisterAllocation {
     pub handler_address: Registers,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VmContext {
     /// Register allocation of the vm
     pub register_allocation: VmRegisterAllocation,

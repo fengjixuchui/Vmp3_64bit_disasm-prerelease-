@@ -59,8 +59,6 @@ pub fn match_mov_reg_source(instruction: &Instruction,
         return false;
     }
 
-    println!("{}", instruction);
-    println!("{:?}", register);
     if instruction.op1_register() != register {
         return false;
     }
@@ -133,6 +131,20 @@ pub fn match_store_reg2_in_reg1(instruction: &Instruction,
     }
 
     Some(instruction_size)
+}
+
+pub fn match_shl_reg_reg(instruction: &Instruction,
+                         reg: Register)
+                         -> bool {
+    match instruction.code() {
+        Code::Shl_rm8_CL | Code::Shl_rm16_CL | Code::Shl_rm32_CL | Code::Shl_rm64_CL
+            if (instruction.op0_register().full_register() == reg) =>
+        {
+            true
+        },
+
+        _ => false,
+    }
 }
 
 pub fn match_shr_reg_reg(instruction: &Instruction,
@@ -500,6 +512,31 @@ pub fn match_sub_reg_by_amount(instruction: &Instruction,
 
     true
 }
+
+
+pub fn match_add_reg_by_amount(instruction: &Instruction,
+                               reg: Register,
+                               amount: u32)
+                               -> bool {
+    if instruction.code() != Code::Add_rm64_imm32 {
+        return false;
+    }
+
+    if instruction.immediate32() != amount {
+        return false;
+    }
+
+    if instruction.op0_kind() != OpKind::Register {
+        return false;
+    }
+
+    if instruction.op0_register().full_register() != reg.full_register() {
+        return false;
+    }
+
+    true
+}
+
 pub fn match_sub_vsp_get_amount(instruction: &Instruction,
                                 vm_register_allocation: &VmRegisterAllocation)
                                 -> Option<u32> {
