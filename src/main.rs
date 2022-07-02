@@ -9,11 +9,15 @@ mod transforms;
 mod util;
 mod vm_handler;
 mod vm_matchers;
+mod symbolic;
 
 use clap::Parser;
 use vm_handler::{VmContext, VmHandler};
 
-use crate::{llvm_ir_gen::VmLifter, vm_matchers::HandlerClass};
+use crate::{
+    llvm_ir_gen::VmLifter,
+    vm_matchers::{HandlerClass, HandlerVmInstruction}, symbolic::print_possible_solutions,
+};
 
 fn parse_hex_vm_call(input_str: &str) -> Result<u64, std::num::ParseIntError> {
     let str_trimmed = input_str.trim_start_matches("0x");
@@ -49,6 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut handlers = Vec::new();
 
     println!("{:<15} | {:<30} | Handler address", "VIP", "Disassembly");
+    let mut count = 0;
     loop {
         let mut halt = false;
         let vm_handler = VmHandler::new(vm_context.handler_address, &pe_file, &pe_bytes);
@@ -63,6 +68,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             HandlerClass::UnconditionalBranch => {
                 println!("Disassembled unconditional branch");
                 println!("[Stopping]");
+                
+                handler_instruction =
+                    vm_handler.match_branch_instructions(&mut vm_context);
+
                 halt = true;
             },
             HandlerClass::NoVipChange => {
@@ -129,9 +138,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         let helper_stub = vm_lifter.create_helper_stub(vm_context.initial_vip);
         vm_lifter.create_helper_function(vm_context.initial_vip);
         vm_lifter.lift_into_helper_stub(&vm_context, &handlers, &helper_stub);
-        //vm_lifter.print_module();
         vm_lifter.verify_module();
+
+        vm_lifter.optimize_module();
+
+        vm_lifter.fix_arg_names(&format!("helperfunction_{:x}", vm_context.initial_vip));
+
+        vm_lifter.output_bitcode();
         vm_lifter.output_module();
+
+        vm_lifter.print_function(&format!("helperfunction_{:x}", vm_context.initial_vip));
+
+        print_possible_solutions(&format!("helperfunction_{:x}", vm_context.initial_vip));
     }
 
     println!("{:?}", vm_context);

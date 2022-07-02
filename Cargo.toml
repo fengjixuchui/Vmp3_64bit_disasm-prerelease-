@@ -9,4 +9,6 @@ edition = "2021"
 iced-x86 = "*"
 clap = {version = "*", features = ["derive"]}
 pelite = "*"
-inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm14-0"] }
+haybale = { version = "*", features = ["llvm-13", "vendor-boolector"] }
+llvm-ir = "*"
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm13-0"] }
