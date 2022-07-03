@@ -1,10 +1,11 @@
 use crate::{
     match_assembly::{
-        match_fetch_encrypted_vip, match_fetch_vip, match_push_rolling_key,
+        match_add_vsp_get_amount, match_fetch_encrypted_vip, match_fetch_reg_any_size,
+        match_fetch_vip, match_mov_reg2_in_reg1, match_mov_reg_source, match_push_rolling_key,
         match_xor_16_rolling_key_dest, match_xor_16_rolling_key_source,
         match_xor_32_rolling_key_source, match_xor_64_rolling_key_dest,
         match_xor_64_rolling_key_source, match_xor_8_rolling_key_dest,
-        match_xor_8_rolling_key_source, match_fetch_reg_any_size, match_mov_reg_source, match_mov_reg2_in_reg1, match_add_vsp_get_amount,
+        match_xor_8_rolling_key_source,
     },
     transforms::{get_transform_for_instruction, EmulateEncryption, EmulateTransform},
     util::*,
@@ -128,7 +129,6 @@ impl VmContext {
                                  pe_file: &PeFile,
                                  pe_bytes: &[u8])
                                  -> Self {
-
         let mut new_vm_context = self.clone();
 
         let vm_jump_handler = VmHandler::new(jump_handler_address, pe_file, pe_bytes);
@@ -138,8 +138,7 @@ impl VmContext {
         // Rolling key is initialized to the initial vip
         let mut vip = if direction_is_forwards {
             jump_target_vip - 4
-        }
-        else {
+        } else {
             jump_target_vip + 4
         };
 
@@ -154,8 +153,9 @@ impl VmContext {
                                                    });
 
         let handler_base_address = instruction_iter.next().unwrap().memory_displacement64();
-        let mut instruction_iter =
-            instruction_iter.skip_while(|insn| !match_fetch_vip(insn, &new_vm_context.register_allocation));
+        let mut instruction_iter = instruction_iter.skip_while(|insn| {
+                                       !match_fetch_vip(insn, &new_vm_context.register_allocation)
+                                   });
 
         // Get the reg where the encrypted offset has been loaded into
         let encrypted_offset_reg = instruction_iter.next().unwrap().op0_register();
@@ -164,7 +164,7 @@ impl VmContext {
 
         let encryption_iter = instruction_iter.take_while(|&insn| {
                                                   !(match_push_rolling_key(insn,
-                                                                           &new_vm_context.register_allocation))
+                                                           &new_vm_context.register_allocation))
                                               });
 
         let unencrypted_offset = encrypted_offset.emulate_encryption(encryption_iter,
@@ -178,7 +178,6 @@ impl VmContext {
             handler_base_address.wrapping_add(unencrypted_offset as i32 as i64 as u64);
 
         let vip_value = vip;
-
 
         new_vm_context.vip_direction_forwards = direction_is_forwards;
         new_vm_context.rolling_key = rolling_key;
@@ -646,7 +645,8 @@ impl VmHandler {
                                handler_address: handler_address_reg }
     }
 
-    pub fn get_register_allocation_vm_jump(&self, old_register_allocation: &mut VmRegisterAllocation) {
+    pub fn get_register_allocation_vm_jump(&self,
+                                           old_register_allocation: &mut VmRegisterAllocation) {
         let mut instruction_iter = self.instructions.iter();
         let mov_to_vip =
             instruction_iter.find(|insn| {
@@ -656,14 +656,15 @@ impl VmHandler {
         let new_vip = mov_to_vip.unwrap().op0_register().full_register();
 
         let add_vsp_instruction =
-            instruction_iter.find(|insn| match_add_vsp_get_amount(insn, old_register_allocation).is_some());
-
-        let mov_vip =
             instruction_iter.find(|insn| {
-                                match_mov_reg2_in_reg1(insn,
-                                                       old_register_allocation.vip.into(),
-                                                       new_vip).is_some()
+                                match_add_vsp_get_amount(insn, old_register_allocation).is_some()
                             });
+
+        let mov_vip = instruction_iter.find(|insn| {
+                                          match_mov_reg2_in_reg1(insn,
+                                                                 old_register_allocation.vip.into(),
+                                                                 new_vip).is_some()
+                                      });
         let new_vip = mov_vip.unwrap().op0_register().full_register();
 
         let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));

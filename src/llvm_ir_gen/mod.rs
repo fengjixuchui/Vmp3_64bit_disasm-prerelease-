@@ -9,11 +9,13 @@ use inkwell::{
         BasicValue, BasicValueEnum, CallableValue, FunctionValue, InstructionValue, PointerValue,
     },
 };
-use std::{borrow::Borrow, cell::RefCell};
+use pelite::pe64::PeFile;
+use petgraph::{graphmap::GraphMap, algo::dominators, EdgeDirection::Incoming};
+use std::{borrow::Borrow, cell::RefCell, error::Error, path::Path, collections::{HashSet, HashMap}};
 
 use crate::{
     vm_handler::{Registers, VmContext},
-    vm_matchers::HandlerVmInstruction,
+    vm_matchers::HandlerVmInstruction, symbolic::get_possible_solutions,
 };
 pub struct VmLifter<'ctx> {
     context: &'ctx Context,
@@ -22,6 +24,84 @@ pub struct VmLifter<'ctx> {
 }
 // This leaks memory :(
 impl<'ctx> VmLifter<'ctx> {
+    pub fn slice_vip(&self,
+                     control_flow_graph: &GraphMap<u64, (), petgraph::Directed>,
+                     mut input_vip: u64,
+                     root_vip: u64,
+                     block_handlers: &[(u64, HandlerVmInstruction)]) -> Result<Vec<u64>, Box<dyn Error>> {
+
+        self.output_module();
+
+        let mut slice_blocks = vec![input_vip];
+
+        'outer: loop {
+            let mut pred_dom_count = 0;
+            let dominator_info = dominators::simple_fast(control_flow_graph, root_vip);
+            let pred_nodes = control_flow_graph.edges_directed(input_vip, Incoming)
+                                               .map(|edge| edge.0)
+                                               .collect::<HashSet<u64>>();
+
+            if pred_nodes.len() == 0 {
+                break 'outer;
+            }
+
+            let mut temp_slice_blocks = Vec::new();
+            for dominator in dominator_info.dominators(input_vip).unwrap() {
+                if pred_nodes.contains(&dominator) {
+                    pred_dom_count += 1;
+                    temp_slice_blocks.push(dominator);
+                    input_vip = dominator;
+                }
+
+                if pred_dom_count >= 2 {
+                    break 'outer;
+                }
+            }
+
+            slice_blocks.extend_from_slice(&temp_slice_blocks);
+        }
+
+        println!("{:x?}", slice_blocks);
+
+        self.create_helper_slicevpc(&slice_blocks);
+        self.optimize_module();
+        self.output_bitcode();
+
+        let possible_solutions_vip =
+            get_possible_solutions("helperslicevpc")?;
+
+
+        let mut solutions_return = Vec::new();
+        for pos_sol in possible_solutions_vip.iter() {
+            if block_handlers.iter().any(|(vip, _)| vip == pos_sol) {
+                println!("Vip -> {:x} already visited", pos_sol);
+                continue;
+            } else {
+                let direction = match block_handlers.last() {
+                    Some((_, HandlerVmInstruction::JumpInc)) => true,
+                    Some((_, HandlerVmInstruction::JumpDec)) => false,
+                    Some((_, HandlerVmInstruction::VmExit)) => continue,
+
+                    Some((_, insn)) => {
+                        dbg!(insn);
+                        panic!("Instruction not matched {}", insn);
+                    },
+                    None => {
+                        panic!("Yep this is no good")
+                    },
+                };
+
+                solutions_return.push(*pos_sol);
+            }
+        }
+
+
+
+        self.reload_module();
+
+        Ok(solutions_return)
+    }
+
     #[allow(dead_code)]
     pub fn print_module(&self) {
         self.module.borrow().print_to_stderr();
@@ -33,6 +113,16 @@ impl<'ctx> VmLifter<'ctx> {
 
     pub fn output_module(&self) {
         self.module.borrow().print_to_file("devirt.ll").unwrap();
+    }
+
+    pub fn reload_module(&self) -> Result<(), Box<dyn Error>> {
+        let path = Path::new("devirt.ll");
+        let memory_buffer = MemoryBuffer::create_from_file(&path)?;
+        let new_module = self.context.create_module_from_ir(memory_buffer)?;
+
+        *self.module.borrow_mut() = new_module;
+
+        Ok(())
     }
 
     pub fn output_bitcode(&self) {
@@ -720,7 +810,186 @@ impl<'ctx> VmLifter<'ctx> {
 
         assert!(helper_function.verify(true));
     }
+
+    pub fn create_helper_slicevpc(&self,
+                                  vips: &[u64]
+                                  ) {
+        let start_vip = vips[0];
+
+        let helper_function_def = self.module
+                                      .borrow()
+                                      .get_function("HelperFunction")
+                                      .expect("Could not find HelperFunction in llvm ir file");
+
+        let llvm_lifetime_start_p0i8 =
+            self.module
+                .borrow()
+                .get_function("llvm.lifetime.start.p0i8")
+                .expect("Could not find llvm.lifetime.start.p0i8 in llvm ir file");
+
+        let llvm_lifetime_end_p0i8 =
+            self.module
+                .borrow()
+                .get_function("llvm.lifetime.end.p0i8")
+                .expect("Could not find llvm.lifetime.end.p0i8 in llvm ir file");
+
+        let llvm_memset_p0i8_i64 =
+            self.module
+                .borrow()
+                .get_function("llvm.memset.p0i8.i64")
+                .expect("Could not find llvm.memset.p0i8.i64 in llvm ir file");
+
+        let helper_function_type = helper_function_def.get_type();
+
+        let helper_slicevpc = self.module
+                                  .borrow()
+                                  .add_function("helperslicevpc",
+                                                helper_function_type,
+                                                None);
+        let param_names = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9",
+                           "r10", "r11", "r12", "r13", "r14", "r15", "flags", "KEY_STUB",
+                           "RET_ADDR", "REL_ADDR"];
+
+        for (i, (&name, param)) in
+            std::iter::zip(param_names.iter(), helper_slicevpc.get_param_iter()).enumerate()
+        {
+            param.set_name(name);
+
+            if name != "KEY_STUB" && name != "RET_ADDR" && name != "REL_ADDR" {
+                helper_slicevpc.add_attribute(AttributeLoc::Param(i as _), self.context.create_enum_attribute(Attribute::get_named_enum_kind_id("noalias"), 0));
+            }
+        }
+
+        // Cloning is all kinds of fucked with the rust lib so it is what it is
+        let entry_bb = self.context.append_basic_block(helper_slicevpc, "entry");
+        self.builder.position_at_end(entry_bb);
+
+        let i64_type = self.context.i64_type();
+        let i8_type = self.context.i8_type();
+        let bool_type = self.context.bool_type();
+
+        let virtual_register_type = self.module
+                                        .borrow()
+                                        .get_struct_type("struct.VirtualRegister")
+                                        .unwrap();
+        let virtual_register_array_type = virtual_register_type.array_type(30);
+
+        let vmregs = self.builder
+                         .build_alloca(virtual_register_array_type, "vmregs");
+
+        let i64_array_type = i64_type.array_type(30);
+        let slots = self.builder.build_alloca(i64_array_type, "slots");
+
+        let vip = self.builder.build_alloca(i64_type, "vip");
+
+        let t0 = self.builder
+                     .build_bitcast(vmregs, i8_type.ptr_type(inkwell::AddressSpace::Generic), "");
+
+        self.builder.build_call(llvm_lifetime_start_p0i8,
+                                &[i64_type.const_int(240, false).into(), t0.into()],
+                                "");
+        self.builder.build_call(llvm_memset_p0i8_i64,
+                                &[t0.into(),
+                                  i8_type.const_zero().into(),
+                                  i64_type.const_int(240, false).into(),
+                                  bool_type.const_zero().into()],
+                                "");
+
+        let t1 = self.builder
+                     .build_bitcast(slots, i8_type.ptr_type(inkwell::AddressSpace::Generic), "");
+
+        self.builder.build_call(llvm_lifetime_start_p0i8,
+                                &[i64_type.const_int(240, false).into(), t1.into()],
+                                "");
+        self.builder.build_call(llvm_memset_p0i8_i64,
+                                &[t1.into(),
+                                  i8_type.const_zero().into(),
+                                  i64_type.const_int(240, false).into(),
+                                  bool_type.const_zero().into()],
+                                "");
+
+        let t2 = self.builder
+                     .build_bitcast(vip, i8_type.ptr_type(inkwell::AddressSpace::Generic), "");
+
+        self.builder.build_call(llvm_lifetime_start_p0i8,
+                                &[i64_type.const_int(8, false).into(), t2.into()],
+                                "");
+
+        let start_vip_llvm = i64_type.const_int(start_vip, false);
+        self.builder.build_store(vip, start_vip_llvm);
+
+        let array_decay = unsafe {
+            self.builder.build_gep(vmregs,
+                                   &[i64_type.const_zero(), i64_type.const_zero()],
+                                   "arraydecay")
+        };
+        let array_decay1 = unsafe {
+            self.builder.build_gep(slots,
+                                   &[i64_type.const_zero(), i64_type.const_zero()],
+                                   "arraydecay")
+        };
+
+        let mut call = None;
+        for stub_vip in vips.iter().rev() {
+            let helper_stub = self.module
+                                  .borrow()
+                                  .get_function(&format!("helperstub_{:x}", stub_vip))
+                                  .unwrap();
+
+            let temp = self.builder.build_call(helper_stub,
+                                               &[helper_slicevpc.get_nth_param(0).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(1).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(2).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(3).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(4).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(5).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(6).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(7).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(8).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(9).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(10).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(11).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(12).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(13).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(14).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(15).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(16).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(17).unwrap().into(),
+                                                 helper_slicevpc.get_nth_param(18).unwrap().into(),
+                                                 i64_type.const_int(0, false).into(),
+                                                 helper_slicevpc.get_nth_param(7).unwrap().into(),
+                                                 vip.into(),
+                                                 array_decay.into(),
+                                                 array_decay1.into()],
+                                               "call");
+
+            call = Some(temp);
+        }
+
+        let undef = self.module.borrow().get_global("__undef").unwrap();
+        let t3 = self.builder.build_load(undef.as_pointer_value(), "");
+
+        self.builder.build_store(helper_slicevpc.get_nth_param(16)
+                                                .unwrap()
+                                                .into_pointer_value(),
+                                 t3);
+        self.builder.build_call(llvm_lifetime_end_p0i8,
+                                &[i64_type.const_int(8, false).into(), t2.into()],
+                                "");
+        self.builder.build_call(llvm_lifetime_end_p0i8,
+                                &[i64_type.const_int(240, false).into(), t1.into()],
+                                "");
+        self.builder.build_call(llvm_lifetime_end_p0i8,
+                                &[i64_type.const_int(240, false).into(), t0.into()],
+                                "");
+
+        self.builder
+            .build_return(Some(&call.unwrap().try_as_basic_value().unwrap_left()));
+
+        assert!(helper_slicevpc.verify(true));
+    }
 }
+
 fn get_param_from_reg<'a>(register: &Registers,
                           helper_stub: &FunctionValue<'a>)
                           -> PointerValue<'a> {

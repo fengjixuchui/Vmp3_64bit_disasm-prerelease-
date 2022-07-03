@@ -1,4 +1,7 @@
-use std::error::Error;
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+};
 
 use pelite::pe64::PeFile;
 use pelite::FileMap;
@@ -12,11 +15,11 @@ mod vm_handler;
 mod vm_matchers;
 
 use clap::Parser;
+use petgraph::{algo::dominators, graphmap::GraphMap, EdgeDirection::Incoming};
 use vm_handler::VmContext;
 
 use crate::{
-    llvm_ir_gen::VmLifter,
-    symbolic::get_possible_solutions, vm_matchers::HandlerVmInstruction,
+    llvm_ir_gen::VmLifter, symbolic::get_possible_solutions, vm_matchers::HandlerVmInstruction, vm_handler::Registers,
 };
 
 fn parse_hex_vm_call(input_str: &str) -> Result<u64, std::num::ParseIntError> {
@@ -46,53 +49,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     let pe_file = PeFile::from_bytes(&map)?;
     let pe_bytes = std::fs::read(input_file)?;
 
+    let mut control_flow_graph = GraphMap::<u64, (), petgraph::Directed>::new();
     let mut vm_context =
         VmContext::new_from_vm_entry(&pe_file, &pe_bytes, command_line_args.vm_call_address);
 
-
     println!("{:x?}", vm_context);
     let handlers = vm_context.disassemble_context(&pe_file, &pe_bytes);
-
-
-
-
 
     if command_line_args.gen_ir {
         println!("Generating llvm ir");
         let vm_lifter = VmLifter::new();
         let helper_stub = vm_lifter.create_helper_stub(vm_context.initial_vip);
-        vm_lifter.create_helper_function(vm_context.initial_vip);
         vm_lifter.lift_into_helper_stub(&vm_context, &handlers, &helper_stub);
-        vm_lifter.verify_module();
 
-        vm_lifter.optimize_module();
-
-        vm_lifter.fix_arg_names(&format!("helperfunction_{:x}", vm_context.initial_vip));
-
-        vm_lifter.output_bitcode();
-        vm_lifter.output_module();
-
-        // vm_lifter.print_function(&format!("helperfunction_{:x}", vm_context.initial_vip));
-
-        let possible_solutions_vip = get_possible_solutions(&format!("helperfunction_{:x}", vm_context.initial_vip))?;
+        let next_vips = vm_lifter.slice_vip(&control_flow_graph, vm_context.initial_vip, vm_context.initial_vip, &handlers)?;
+        println!("{:#x?}", next_vips);
         
-        for pos_sol in possible_solutions_vip.iter() {
-            if handlers.iter().any(|(vip, _)| vip == pos_sol) {
-                println!("Vip -> {:x} already visited", pos_sol);
-            }
-            else {
-                let direction = match handlers.last() {
-                    Some((_, HandlerVmInstruction::JumpInc)) => true,
-                    Some((_, HandlerVmInstruction::JumpDec)) => false,
+        let mut new_vm_context = vm_context.new_from_jump_handler(vm_context.handler_address, next_vips[0], false, &pe_file, &pe_bytes);
+        let new_handlers = new_vm_context.disassemble_context(&pe_file, &pe_bytes);
 
-                    _ => panic!(),
-                };
-
-                let mut vm_context2 = vm_context.new_from_jump_handler(vm_context.handler_address, *pos_sol, direction, &pe_file, &pe_bytes);
-                println!("{:x?}", vm_context);
-                let _ = vm_context2.disassemble_context(&pe_file, &pe_bytes);
-            }
-        }
 
     }
 
