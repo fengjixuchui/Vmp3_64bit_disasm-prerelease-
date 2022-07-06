@@ -63,6 +63,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let last_handler = *handlers.last().unwrap();
 
     let root_vip = vm_context.initial_vip;
+    control_flow_graph.add_node(root_vip);
 
     vm_lifter.lift_helper_stub(&vm_context, &handlers);
 
