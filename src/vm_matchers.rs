@@ -1,17 +1,9 @@
 use std::fmt::Display;
 
-use iced_x86::{Code, Register};
+use iced_x86::{Code, Register, Instruction};
 
 use crate::{
-    match_assembly::{
-        match_add_reg_by_amount, match_add_reg_reg, match_add_vsp_by_amount,
-        match_add_vsp_get_amount, match_and_reg_reg, match_fetch_reg_any_size, match_fetch_vm_reg,
-        match_fetch_zx_reg_any_size, match_imul_reg_reg, match_mov_reg2_in_reg1,
-        match_mov_reg_source, match_mul_reg_reg, match_not_reg, match_or_reg_reg, match_popfq,
-        match_pushfq, match_ret, match_shl_reg_reg, match_shr_reg_reg, match_store_reg2_in_reg1,
-        match_store_reg_any_size, match_sub_reg_by_amount, match_sub_vsp_by_amount,
-        match_sub_vsp_get_amount,
-    },
+    match_assembly::*,
     util::check_full_reg_written,
     vm_handler::{Registers, VmContext, VmHandler, VmRegisterAllocation},
 };
@@ -48,6 +40,8 @@ pub enum HandlerVmInstruction {
     Fetch(usize),
     Store(usize),
     VmExit,
+    JumpDecVspChange,
+    JumpIncVspChange,
     JumpDec,
     JumpInc,
     UnknownByteOperand,
@@ -63,6 +57,7 @@ impl Display for HandlerVmInstruction {
     fn fmt(&self,
            f: &mut std::fmt::Formatter<'_>)
            -> std::fmt::Result {
+        /// Local function for fomatting registers
         fn format_reg_offset(reg_offset: u8,
                              size: usize)
                              -> String {
@@ -116,6 +111,8 @@ impl Display for HandlerVmInstruction {
             HandlerVmInstruction::Fetch(size) => write!(f, "fetch{}", size * 8),
             HandlerVmInstruction::Store(size) => write!(f, "store{}", size * 8),
             HandlerVmInstruction::VmExit => write!(f, "vm_exit"),
+            HandlerVmInstruction::JumpDecVspChange => write!(f, "jump_dec_vsp_change"),
+            HandlerVmInstruction::JumpIncVspChange => write!(f, "jump_inc_vsp_change"),
             HandlerVmInstruction::JumpDec => write!(f, "jump_dec"),
             HandlerVmInstruction::JumpInc => write!(f, "jump_inc"),
             HandlerVmInstruction::UnknownByteOperand => {
@@ -140,17 +137,22 @@ impl Display for HandlerVmInstruction {
 }
 
 impl VmHandler {
+    /// Classify the handler based on the class of access to the vip register
     pub fn match_handler_class(&self,
                                reg_allocation: &VmRegisterAllocation)
                                -> HandlerClass {
+        // Create an iterator over the instructions of the handler
         let instruction_iter = self.instructions.iter();
 
+        // Collect all the mov accesses to the vip register
         let vip_modification_vec =
             instruction_iter.clone()
                             .filter(|insn| check_full_reg_written(insn, reg_allocation.vip.into()))
                             .filter(|insn| insn.code() == Code::Mov_r64_rm64)
                             .collect::<Vec<_>>();
 
+        // These registers are used in the stack relocation code of some handlers so
+        // they are special
         if (reg_allocation.vip != Registers::Rsi &&
             reg_allocation.vip != Registers::Rdi &&
             !vip_modification_vec.is_empty()) ||
@@ -159,6 +161,7 @@ impl VmHandler {
             return HandlerClass::UnconditionalBranch;
         }
 
+        // Collect all instructions that advance the vip and get their immediate values
         let vip_update_vec =
             instruction_iter.filter(|insn| check_full_reg_written(insn, reg_allocation.vip.into()))
                             .filter(|insn| {
@@ -168,6 +171,7 @@ impl VmHandler {
                             .map(|insn| insn.immediate32())
                             .collect::<Vec<_>>();
 
+        // Match the vip offsets to a handler class
         match vip_update_vec.as_slice() {
             &[] => HandlerClass::NoVipChange,
             &[4] => HandlerClass::NoOperand,
@@ -181,9 +185,18 @@ impl VmHandler {
         }
     }
 
+    /// Function for matching handlers of the UnconditionalBranch class
     pub fn match_branch_instructions(&self,
-                                     vm_context: &mut VmContext)
+                                     vm_context: &VmContext)
                                      -> HandlerVmInstruction {
+        if vm_match_jmp_dec_vsp_change(self, vm_context) {
+            return HandlerVmInstruction::JumpDecVspChange;
+        }
+
+        if vm_match_jmp_inc_vsp_change(self, vm_context) {
+            return HandlerVmInstruction::JumpIncVspChange;
+        }
+
         if vm_match_jmp_dec(self, vm_context) {
             return HandlerVmInstruction::JumpDec;
         }
@@ -195,16 +208,34 @@ impl VmHandler {
         HandlerVmInstruction::Unknown
     }
 
+    /// Function for mathing the handlers of the NoVipChange class
     pub fn match_no_vip_change_instructions(&self,
-                                            reg_allocation: &VmRegisterAllocation)
+                                            vm_context: &VmContext)
                                             -> HandlerVmInstruction {
-        if vm_match_vm_exit(self, reg_allocation) {
+        if vm_match_vm_exit(self, &vm_context.register_allocation) {
             return HandlerVmInstruction::VmExit;
+        }
+
+        if vm_match_jmp_dec_vsp_change(self, vm_context) {
+            return HandlerVmInstruction::JumpDecVspChange;
+        }
+
+        if vm_match_jmp_inc_vsp_change(self, vm_context) {
+            return HandlerVmInstruction::JumpIncVspChange;
+        }
+
+        if vm_match_jmp_dec(self, vm_context) {
+            return HandlerVmInstruction::JumpDec;
+        }
+
+        if vm_match_jmp_inc(self, vm_context) {
+            return HandlerVmInstruction::JumpInc;
         }
 
         HandlerVmInstruction::UnknownNoVipChange
     }
 
+    /// Function for mathing the handlers of the ByteOperand class
     pub fn match_byte_operand_instructions(&self,
                                            reg_allocation: &VmRegisterAllocation,
                                            byte_operand: u8)
@@ -224,6 +255,7 @@ impl VmHandler {
         HandlerVmInstruction::UnknownByteOperand
     }
 
+    /// Function for mathing the handlers of the WordOperand class
     pub fn match_word_operand_instructions(&self,
                                            reg_allocation: &VmRegisterAllocation,
                                            word_operand: u16)
@@ -234,6 +266,7 @@ impl VmHandler {
         HandlerVmInstruction::UnknownWordOperand
     }
 
+    /// Function for mathing the handlers of the DwordOperand class
     pub fn match_dword_operand_instructions(&self,
                                             reg_allocation: &VmRegisterAllocation,
                                             dword_operand: u32)
@@ -244,6 +277,7 @@ impl VmHandler {
         HandlerVmInstruction::UnknownDwordOperand
     }
 
+    /// Function for mathing the handlers of the QwordOperand class
     pub fn match_qword_operand_instructions(&self,
                                             reg_allocation: &VmRegisterAllocation,
                                             qword_operand: u64)
@@ -254,6 +288,7 @@ impl VmHandler {
         HandlerVmInstruction::UnknownQwordOperand
     }
 
+    /// Function for mathing the handlers of the NoOperand class
     pub fn match_no_operand_instructions(&self,
                                          reg_allocation: &VmRegisterAllocation)
                                          -> HandlerVmInstruction {
@@ -327,8 +362,9 @@ impl VmHandler {
         HandlerVmInstruction::UnknownNoOperand
     }
 }
+
 fn vm_match_jmp_dec(vm_handler: &VmHandler,
-                    vm_context: &mut VmContext)
+                    vm_context: &VmContext)
                     -> bool {
     let mut instruction_iter = vm_handler.instructions.iter();
     let mov_to_vip =
@@ -353,12 +389,7 @@ fn vm_match_jmp_dec(vm_handler: &VmHandler,
         return false;
     }
 
-    let mov_vip =
-        instruction_iter.find(|insn| {
-                            match_mov_reg2_in_reg1(insn,
-                                                   vm_context.register_allocation.vip.into(),
-                                                   new_vip).is_some()
-                        });
+    let mov_vip = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
     let new_vip = mov_vip.unwrap().op0_register().full_register();
 
     let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
@@ -373,7 +404,7 @@ fn vm_match_jmp_dec(vm_handler: &VmHandler,
 }
 
 fn vm_match_jmp_inc(vm_handler: &VmHandler,
-                    vm_context: &mut VmContext)
+                    vm_context: &VmContext)
                     -> bool {
     let mut instruction_iter = vm_handler.instructions.iter();
     let mov_to_vip =
@@ -398,12 +429,96 @@ fn vm_match_jmp_inc(vm_handler: &VmHandler,
         return false;
     }
 
-    let mov_vip =
+    let mov_vip = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
+    let new_vip = mov_vip.unwrap().op0_register().full_register();
+
+    let mov_vsp =
         instruction_iter.find(|insn| {
-                            match_mov_reg2_in_reg1(insn,
-                                                   vm_context.register_allocation.vip.into(),
-                                                   new_vip).is_some()
+                            match_mov_reg_source(insn, vm_context.register_allocation.vsp.into())
                         });
+
+    let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
+
+    if store_key_reg.is_none() {
+        return false;
+    }
+
+    let new_key_register = store_key_reg.unwrap().op0_register();
+
+    instruction_iter.any(|insn| match_add_reg_by_amount(insn, new_vip, 4))
+}
+
+fn vm_match_jmp_dec_vsp_change(vm_handler: &VmHandler,
+                               vm_context: &VmContext)
+                               -> bool {
+    let mut instruction_iter = vm_handler.instructions.iter();
+    let mov_to_vip =
+        instruction_iter.find(|insn| {
+            match_fetch_reg_any_size(insn, vm_context.register_allocation.vsp.into()).is_some()
+        });
+
+    if mov_to_vip.is_none() {
+        return false;
+    }
+
+    let new_vip = mov_to_vip.unwrap().op0_register().full_register();
+
+    let add_vsp_instruction =
+        instruction_iter.find(|insn| match_add_vsp_get_amount(insn, &vm_context.register_allocation).is_some());
+
+    if add_vsp_instruction.is_none() {
+        return false;
+    }
+
+    if add_vsp_instruction.unwrap().immediate32() != 8 {
+        return false;
+    }
+
+    let mov_vip = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
+    let new_vip = mov_vip.unwrap().op0_register().full_register();
+
+    let mov_vsp =
+        instruction_iter.find(|insn| {
+                            match_mov_reg_source(insn, vm_context.register_allocation.vsp.into())
+                        });
+    let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
+
+    if store_key_reg.is_none() {
+        return false;
+    }
+
+    let new_key_register = store_key_reg.unwrap().op0_register();
+
+    instruction_iter.any(|insn| match_sub_reg_by_amount(insn, new_vip, 4))
+}
+
+fn vm_match_jmp_inc_vsp_change(vm_handler: &VmHandler,
+                               vm_context: &VmContext)
+                               -> bool {
+    let mut instruction_iter = vm_handler.instructions.iter();
+    let mov_to_vip =
+        instruction_iter.find(|insn| {
+            match_fetch_reg_any_size(insn, vm_context.register_allocation.vsp.into()).is_some()
+        });
+
+    if mov_to_vip.is_none() {
+        return false;
+    }
+
+    let new_vip = mov_to_vip.unwrap().op0_register().full_register();
+
+    let add_vsp_instruction =
+        instruction_iter.find(|insn| match_add_vsp_get_amount(insn, &vm_context.register_allocation).is_some());
+
+    if add_vsp_instruction.is_none() {
+        return false;
+    }
+
+    if add_vsp_instruction.unwrap().immediate32() != 8 {
+        return false;
+    }
+
+    let mov_vip = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
     let new_vip = mov_vip.unwrap().op0_register().full_register();
 
     let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
@@ -417,6 +532,8 @@ fn vm_match_jmp_inc(vm_handler: &VmHandler,
     instruction_iter.any(|insn| match_add_reg_by_amount(insn, new_vip, 4))
 }
 
+
+/// Match a pop of a vmregister
 fn vm_match_vm_reg_pop(vm_handler: &VmHandler,
                        reg_allocation: &VmRegisterAllocation)
                        -> Option<usize> {
@@ -429,6 +546,7 @@ fn vm_match_vm_reg_pop(vm_handler: &VmHandler,
     add_vsp_instruction.map(|insn| insn.immediate32() as usize)
 }
 
+/// Match a push of a vmregister
 fn vm_match_vm_reg_push(vm_handler: &VmHandler,
                         reg_allocation: &VmRegisterAllocation)
                         -> Option<usize> {
@@ -453,37 +571,45 @@ fn vm_match_vm_reg_push(vm_handler: &VmHandler,
     sub_vsp_instruction.map(|insn| insn.immediate32() as usize)
 }
 
+/// Match a n byte imm push
+fn match_push_imm_n<const N: u32>(vm_handler: &VmHandler,
+                                    reg_allocation: &VmRegisterAllocation) -> bool {
+    let mut instruction_iter = vm_handler.instructions.iter();
+    instruction_iter.find(|insn| match_sub_vsp_by_amount(insn, reg_allocation, N));
+    instruction_iter.any(|insn| match_store_reg_any_size(insn, reg_allocation.vsp.into()).is_some())
+}
+
+
+/// Match 64 bit imm push
 fn vm_match_push_imm64(vm_handler: &VmHandler,
                        reg_allocation: &VmRegisterAllocation)
                        -> bool {
-    let mut instruction_iter = vm_handler.instructions.iter();
-    instruction_iter.find(|insn| match_sub_vsp_by_amount(insn, reg_allocation, 8));
-    instruction_iter.any(|insn| match_store_reg_any_size(insn, reg_allocation.vsp.into()).is_some())
+    match_push_imm_n::<8>(vm_handler, reg_allocation)
 }
 
+/// Match 32 bit imm push
 fn vm_match_push_imm32(vm_handler: &VmHandler,
                        reg_allocation: &VmRegisterAllocation)
                        -> bool {
-    let mut instruction_iter = vm_handler.instructions.iter();
-    instruction_iter.find(|insn| match_sub_vsp_by_amount(insn, reg_allocation, 4));
-    instruction_iter.any(|insn| match_store_reg_any_size(insn, reg_allocation.vsp.into()).is_some())
+    match_push_imm_n::<4>(vm_handler, reg_allocation)
 }
 
+/// Match 16 bit imm push
 fn vm_match_push_imm16(vm_handler: &VmHandler,
                        reg_allocation: &VmRegisterAllocation)
                        -> bool {
-    let mut instruction_iter = vm_handler.instructions.iter();
-    instruction_iter.find(|insn| match_sub_vsp_by_amount(insn, reg_allocation, 2));
-    instruction_iter.any(|insn| match_store_reg_any_size(insn, reg_allocation.vsp.into()).is_some())
+    match_push_imm_n::<2>(vm_handler, reg_allocation)
 }
 
+/// Match 8 bit imm push
 fn vm_match_push_imm8(vm_handler: &VmHandler,
                       reg_allocation: &VmRegisterAllocation)
                       -> bool {
-    let mut instruction_iter = vm_handler.instructions.iter();
-    instruction_iter.find(|insn| match_sub_vsp_by_amount(insn, reg_allocation, 2));
-    instruction_iter.any(|insn| match_store_reg_any_size(insn, reg_allocation.vsp.into()).is_some())
+    // Push of byte is sign extended
+    match_push_imm_n::<2>(vm_handler, reg_allocation)
 }
+
+
 fn vm_match_pop_vsp_64(vm_handler: &VmHandler,
                        reg_allocation: &VmRegisterAllocation)
                        -> bool {
@@ -500,325 +626,238 @@ fn vm_match_pop_vsp_64(vm_handler: &VmHandler,
     fetch_vsp_instruction_1.unwrap().op0_register() == reg_allocation.vsp.into()
 }
 
-fn vm_match_add(vm_handler: &VmHandler,
-                reg_allocation: &VmRegisterAllocation)
-                -> Option<usize> {
-    let mut instruction_iter = vm_handler.instructions.iter();
+macro_rules! generate_binop_match {
+    ($matcher_name:ident, $specific_matcher:expr) => {
+        
+        fn $matcher_name(vm_handler: &VmHandler,
+                        reg_allocation: &VmRegisterAllocation)
+                        -> Option<usize> {
+            let mut instruction_iter = vm_handler.instructions.iter();
 
-    let fetch_vsp_instruction_1 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg1 = fetch_vsp_instruction_1.op0_register().full_register();
+            let fetch_vsp_instruction_1 =
+                instruction_iter.find(|insn| {
+                                    match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
+                                })?;
+            let reg1 = fetch_vsp_instruction_1.op0_register().full_register();
 
-    let fetch_vsp_instruction_2 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg2 = fetch_vsp_instruction_2.op0_register().full_register();
+            let fetch_vsp_instruction_2 =
+                instruction_iter.find(|insn| {
+                                    match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
+                                })?;
+            let reg2 = fetch_vsp_instruction_2.op0_register().full_register();
 
-    let instruction_size = fetch_vsp_instruction_1.memory_size().size();
+            let instruction_size = fetch_vsp_instruction_1.memory_size().size();
 
-    instruction_iter.find(|insn| match_add_reg_reg(insn, reg1, reg2))?;
+            $specific_matcher (&mut instruction_iter, reg1, reg2)?;
 
-    instruction_iter.find(|insn| match_pushfq(insn))?;
+            instruction_iter.find(|insn| match_pushfq(insn))?;
 
-    Some(instruction_size)
+            Some(instruction_size)
+        }
+    };
 }
 
-fn vm_match_add_byte(vm_handler: &VmHandler,
-                     reg_allocation: &VmRegisterAllocation)
-                     -> Option<usize> {
-    let mut instruction_iter = vm_handler.instructions.iter();
+macro_rules! generate_binop_match_byte {
+    ($matcher_name:ident, $specific_matcher:expr) => {
+        
+        fn $matcher_name(vm_handler: &VmHandler,
+                        reg_allocation: &VmRegisterAllocation)
+                        -> Option<usize> {
+            let mut instruction_iter = vm_handler.instructions.iter();
 
-    let fetch_vsp_instruction_1 =
-        instruction_iter.find(|insn| {
-                            match_fetch_zx_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg1 = fetch_vsp_instruction_1.op0_register().full_register();
+            let fetch_vsp_instruction_1 =
+                instruction_iter.find(|insn| {
+                                    match_fetch_zx_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
+                                })?;
+            let reg1 = fetch_vsp_instruction_1.op0_register().full_register();
 
-    let fetch_vsp_instruction_2 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg2 = fetch_vsp_instruction_2.op0_register().full_register();
+            let fetch_vsp_instruction_2 =
+                instruction_iter.find(|insn| {
+                                    match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
+                                })?;
+            let reg2 = fetch_vsp_instruction_2.op0_register().full_register();
 
-    let instruction_size = fetch_vsp_instruction_1.memory_size().size();
+            let instruction_size = fetch_vsp_instruction_1.memory_size().size();
 
-    instruction_iter.find(|insn| match_add_reg_reg(insn, reg1, reg2))?;
+            $specific_matcher (&mut instruction_iter, reg1, reg2)?;
 
-    instruction_iter.find(|insn| match_pushfq(insn))?;
+            instruction_iter.find(|insn| match_pushfq(insn))?;
 
-    Some(instruction_size)
+            Some(instruction_size)
+        }
+    };
 }
 
-fn vm_match_mul(vm_handler: &VmHandler,
-                reg_allocation: &VmRegisterAllocation)
-                -> Option<usize> {
-    let mut instruction_iter = vm_handler.instructions.iter();
+fn sub_match_add<'a, I>(instruction_iter: &mut I, reg1: Register, reg2: Register) -> Option<&'a Instruction> 
+where I: Iterator<Item=&'a Instruction>{
+     instruction_iter.find(|insn| match_add_reg_reg(insn, reg1, reg2))
+}
+generate_binop_match!(vm_match_add, sub_match_add);
+generate_binop_match_byte!(vm_match_add_byte, sub_match_add);
 
-    let fetch_vsp_instruction_1 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg1 = fetch_vsp_instruction_1.op0_register().full_register();
-
-    let fetch_vsp_instruction_2 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg2 = fetch_vsp_instruction_2.op0_register().full_register();
-
-    let instruction_size = fetch_vsp_instruction_1.memory_size().size();
-
-    instruction_iter.find(|insn| match_mul_reg_reg(insn, reg1, reg2))?;
-
-    instruction_iter.find(|insn| match_pushfq(insn))?;
-
-    Some(instruction_size)
+fn sub_match_mul<'a, I>(instruction_iter: &mut I, reg1: Register, reg2: Register) -> Option<&'a Instruction> 
+where I: Iterator<Item=&'a Instruction>{
+    instruction_iter.find(|insn| match_mul_reg_reg(insn, reg1, reg2))
 }
 
-fn vm_match_imul(vm_handler: &VmHandler,
-                 reg_allocation: &VmRegisterAllocation)
-                 -> Option<usize> {
-    let mut instruction_iter = vm_handler.instructions.iter();
-
-    let fetch_vsp_instruction_1 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg1 = fetch_vsp_instruction_1.op0_register().full_register();
-
-    let fetch_vsp_instruction_2 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg2 = fetch_vsp_instruction_2.op0_register().full_register();
-
-    let instruction_size = fetch_vsp_instruction_1.memory_size().size();
-
-    instruction_iter.find(|insn| match_imul_reg_reg(insn, reg1, reg2))?;
-
-    instruction_iter.find(|insn| match_pushfq(insn))?;
-
-    Some(instruction_size)
+fn sub_match_imul<'a, I>(instruction_iter: &mut I, reg1: Register, reg2: Register) -> Option<&'a Instruction> 
+where I: Iterator<Item=&'a Instruction>{
+    instruction_iter.find(|insn| match_imul_reg_reg(insn, reg1, reg2))
 }
 
-fn vm_match_shr(vm_handler: &VmHandler,
-                reg_allocation: &VmRegisterAllocation)
-                -> Option<usize> {
-    let mut instruction_iter = vm_handler.instructions.iter();
+generate_binop_match!(vm_match_mul, sub_match_mul);
+generate_binop_match!(vm_match_imul, sub_match_imul);
 
-    let fetch_vsp_instruction_1 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg = fetch_vsp_instruction_1.op0_register();
 
-    let _fetch_vsp_instruction_2 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-
-    let instruction_size = fetch_vsp_instruction_1.memory_size().size();
-
-    instruction_iter.find(|insn| match_shr_reg_reg(insn, reg))?;
-
-    instruction_iter.find(|insn| match_pushfq(insn))?;
-
-    Some(instruction_size)
-}
-
-fn vm_match_shr_byte(vm_handler: &VmHandler,
-                     reg_allocation: &VmRegisterAllocation)
-                     -> Option<usize> {
-    let mut instruction_iter = vm_handler.instructions.iter();
-
-    let fetch_vsp_instruction_1 =
-        instruction_iter.find(|insn| {
-                            match_fetch_zx_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg = fetch_vsp_instruction_1.op0_register().full_register();
-
-    let _fetch_vsp_instruction_2 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-
-    let instruction_size = fetch_vsp_instruction_1.memory_size().size();
-
-    instruction_iter.find(|insn| match_shr_reg_reg(insn, reg))?;
-
-    instruction_iter.find(|insn| match_pushfq(insn))?;
-
-    Some(instruction_size)
-}
-
-fn vm_match_shl(vm_handler: &VmHandler,
-                reg_allocation: &VmRegisterAllocation)
-                -> Option<usize> {
-    let mut instruction_iter = vm_handler.instructions.iter();
-
-    let fetch_vsp_instruction_1 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg = fetch_vsp_instruction_1.op0_register();
-
-    let _fetch_vsp_instruction_2 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-
-    let instruction_size = fetch_vsp_instruction_1.memory_size().size();
-
-    instruction_iter.find(|insn| match_shl_reg_reg(insn, reg))?;
-
-    instruction_iter.find(|insn| match_pushfq(insn))?;
-
-    Some(instruction_size)
-}
-
-fn vm_match_shl_byte(vm_handler: &VmHandler,
-                     reg_allocation: &VmRegisterAllocation)
-                     -> Option<usize> {
-    let mut instruction_iter = vm_handler.instructions.iter();
-
-    let fetch_vsp_instruction_1 =
-        instruction_iter.find(|insn| {
-                            match_fetch_zx_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg = fetch_vsp_instruction_1.op0_register().full_register();
-
-    let _fetch_vsp_instruction_2 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-
-    let instruction_size = fetch_vsp_instruction_1.memory_size().size();
-
-    instruction_iter.find(|insn| match_shl_reg_reg(insn, reg))?;
-
-    instruction_iter.find(|insn| match_pushfq(insn))?;
-
-    Some(instruction_size)
-}
-
-fn vm_match_nand(vm_handler: &VmHandler,
-                 reg_allocation: &VmRegisterAllocation)
-                 -> Option<usize> {
-    let mut instruction_iter = vm_handler.instructions.iter();
-
-    let fetch_vsp_instruction_1 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg1 = fetch_vsp_instruction_1.op0_register().full_register();
-
-    let fetch_vsp_instruction_2 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg2 = fetch_vsp_instruction_2.op0_register().full_register();
-
-    let instruction_size = fetch_vsp_instruction_1.memory_size().size();
-
+fn sub_match_nand<'a, I>(instruction_iter: &mut I, reg1: Register, reg2: Register) -> Option<&'a Instruction> 
+where I: Iterator<Item=&'a Instruction>{
     instruction_iter.find(|insn| match_not_reg(insn, reg1))?;
     instruction_iter.find(|insn| match_not_reg(insn, reg2))?;
 
-    instruction_iter.find(|insn| match_or_reg_reg(insn, reg1, reg2))?;
-
-    instruction_iter.find(|insn| match_pushfq(insn))?;
-
-    Some(instruction_size)
+    instruction_iter.find(|insn| match_or_reg_reg(insn, reg1, reg2))
 }
 
-fn vm_match_nand_byte(vm_handler: &VmHandler,
-                      reg_allocation: &VmRegisterAllocation)
-                      -> Option<usize> {
-    let mut instruction_iter = vm_handler.instructions.iter();
+generate_binop_match!(vm_match_nand, sub_match_nand);
+generate_binop_match_byte!(vm_match_nand_byte, sub_match_nand);
 
-    let fetch_vsp_instruction_1 =
-        instruction_iter.find(|insn| {
-                            match_fetch_zx_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg1 = fetch_vsp_instruction_1.op0_register().full_register();
-
-    let fetch_vsp_instruction_2 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg2 = fetch_vsp_instruction_2.op0_register().full_register();
-
-    let instruction_size = fetch_vsp_instruction_1.memory_size().size();
-
+fn sub_match_nor<'a, I>(instruction_iter: &mut I, reg1: Register, reg2: Register) -> Option<&'a Instruction> 
+where I: Iterator<Item=&'a Instruction>{
     instruction_iter.find(|insn| match_not_reg(insn, reg1))?;
     instruction_iter.find(|insn| match_not_reg(insn, reg2))?;
 
-    instruction_iter.find(|insn| match_or_reg_reg(insn, reg1, reg2))?;
-
-    instruction_iter.find(|insn| match_pushfq(insn))?;
-
-    Some(instruction_size)
+    instruction_iter.find(|insn| match_and_reg_reg(insn, reg1, reg2))
 }
 
-fn vm_match_nor(vm_handler: &VmHandler,
-                reg_allocation: &VmRegisterAllocation)
-                -> Option<usize> {
+generate_binop_match!(vm_match_nor, sub_match_nor);
+generate_binop_match_byte!(vm_match_nor_byte, sub_match_nor);
+
+
+macro_rules! generate_binop_match_single_reg {
+    ($matcher_name:ident, $specific_matcher:expr) => {
+        
+        fn $matcher_name(vm_handler: &VmHandler,
+                        reg_allocation: &VmRegisterAllocation)
+                        -> Option<usize> {
+            let mut instruction_iter = vm_handler.instructions.iter();
+
+            let fetch_vsp_instruction_1 =
+                instruction_iter.find(|insn| {
+                                    match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
+                                })?;
+            let reg = fetch_vsp_instruction_1.op0_register();
+
+            let _fetch_vsp_instruction_2 =
+                instruction_iter.find(|insn| {
+                                    match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
+                                })?;
+
+            let instruction_size = fetch_vsp_instruction_1.memory_size().size();
+
+            $specific_matcher (&mut instruction_iter, reg)?;
+
+            instruction_iter.find(|insn| match_pushfq(insn))?;
+
+            Some(instruction_size)
+        }
+    };
+}
+
+macro_rules! generate_binop_match_byte_single_reg {
+    ($matcher_name:ident, $specific_matcher:expr) => {
+        
+        fn $matcher_name(vm_handler: &VmHandler,
+                        reg_allocation: &VmRegisterAllocation)
+                        -> Option<usize> {
+            let mut instruction_iter = vm_handler.instructions.iter();
+
+            let fetch_vsp_instruction_1 =
+                instruction_iter.find(|insn| {
+                                    match_fetch_zx_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
+                                })?;
+            let reg = fetch_vsp_instruction_1.op0_register().full_register();
+
+            let _fetch_vsp_instruction_2 =
+                instruction_iter.find(|insn| {
+                                    match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
+                                })?;
+
+            let instruction_size = fetch_vsp_instruction_1.memory_size().size();
+
+            $specific_matcher (&mut instruction_iter, reg)?;
+
+            instruction_iter.find(|insn| match_pushfq(insn))?;
+
+            Some(instruction_size)
+        }
+    };
+}
+
+fn sub_match_shr<'a, I>(instruction_iter: &mut I, reg: Register) -> Option<&'a Instruction> 
+where I: Iterator<Item=&'a Instruction>{
+    instruction_iter.find(|insn| match_shr_reg_reg(insn, reg))
+}
+
+
+generate_binop_match_single_reg!(vm_match_shr, sub_match_shr);
+generate_binop_match_byte_single_reg!(vm_match_shr_byte, sub_match_shr);
+
+fn sub_match_shl<'a, I>(instruction_iter: &mut I, reg: Register) -> Option<&'a Instruction> 
+where I: Iterator<Item=&'a Instruction>{
+    instruction_iter.find(|insn| match_shl_reg_reg(insn, reg))
+}
+
+generate_binop_match_single_reg!(vm_match_shl, sub_match_shl);
+generate_binop_match_byte_single_reg!(vm_match_shl_byte, sub_match_shl);
+
+fn vm_match_fetch(vm_handler: &VmHandler,
+                  reg_allocation: &VmRegisterAllocation)
+                  -> Option<usize> {
     let mut instruction_iter = vm_handler.instructions.iter();
-
-    let fetch_vsp_instruction_1 =
+    let fetch_vsp_instruction =
         instruction_iter.find(|insn| {
                             match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
                         })?;
-    let reg1 = fetch_vsp_instruction_1.op0_register().full_register();
 
-    let fetch_vsp_instruction_2 =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg2 = fetch_vsp_instruction_2.op0_register().full_register();
+    let fetch_register = fetch_vsp_instruction.op0_register();
 
-    let instruction_size = fetch_vsp_instruction_1.memory_size().size();
+    let mut fetch_size = 0;
+    instruction_iter.find(|insn| {
+                        if let Some(size) = match_fetch_reg_any_size(insn, fetch_register) {
+                            fetch_size = size;
+                            true
+                        } else {
+                            false
+                        }
+                    })?;
 
-    instruction_iter.find(|insn| match_not_reg(insn, reg1))?;
-    instruction_iter.find(|insn| match_not_reg(insn, reg2))?;
-
-    instruction_iter.find(|insn| match_and_reg_reg(insn, reg1, reg2))?;
-
-    instruction_iter.find(|insn| match_pushfq(insn))?;
-
-    Some(instruction_size)
+    Some(fetch_size)
 }
 
-fn vm_match_nor_byte(vm_handler: &VmHandler,
-                     reg_allocation: &VmRegisterAllocation)
-                     -> Option<usize> {
+
+fn vm_match_fetch_byte(vm_handler: &VmHandler,
+                       reg_allocation: &VmRegisterAllocation)
+                       -> Option<usize> {
     let mut instruction_iter = vm_handler.instructions.iter();
-
-    let fetch_vsp_instruction_1 =
-        instruction_iter.find(|insn| {
-                            match_fetch_zx_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-    let reg1 = fetch_vsp_instruction_1.op0_register().full_register();
-
-    let fetch_vsp_instruction_2 =
+    let fetch_vsp_instruction =
         instruction_iter.find(|insn| {
                             match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
                         })?;
-    let reg2 = fetch_vsp_instruction_2.op0_register().full_register();
 
-    let instruction_size = fetch_vsp_instruction_1.memory_size().size();
+    let fetch_register = fetch_vsp_instruction.op0_register().full_register();
 
-    instruction_iter.find(|insn| match_not_reg(insn, reg1))?;
-    instruction_iter.find(|insn| match_not_reg(insn, reg2))?;
+    let mut fetch_size = 0;
+    instruction_iter.find(|insn| {
+                        if let Some(size) = match_fetch_zx_reg_any_size(insn, fetch_register) {
+                            fetch_size = size;
+                            true
+                        } else {
+                            false
+                        }
+                    })?;
 
-    instruction_iter.find(|insn| match_and_reg_reg(insn, reg1, reg2))?;
-
-    instruction_iter.find(|insn| match_pushfq(insn))?;
-
-    Some(instruction_size)
+    Some(fetch_size)
 }
+
 fn vm_match_store(vm_handler: &VmHandler,
                   reg_allocation: &VmRegisterAllocation)
                   -> Option<usize> {
@@ -849,53 +888,6 @@ fn vm_match_store(vm_handler: &VmHandler,
     Some(instruction_size)
 }
 
-fn vm_match_fetch(vm_handler: &VmHandler,
-                  reg_allocation: &VmRegisterAllocation)
-                  -> Option<usize> {
-    let mut instruction_iter = vm_handler.instructions.iter();
-    let fetch_vsp_instruction =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-
-    let fetch_register = fetch_vsp_instruction.op0_register();
-
-    let mut fetch_size = 0;
-    instruction_iter.find(|insn| {
-                        if let Some(size) = match_fetch_reg_any_size(insn, fetch_register) {
-                            fetch_size = size;
-                            true
-                        } else {
-                            false
-                        }
-                    })?;
-
-    Some(fetch_size)
-}
-
-fn vm_match_fetch_byte(vm_handler: &VmHandler,
-                       reg_allocation: &VmRegisterAllocation)
-                       -> Option<usize> {
-    let mut instruction_iter = vm_handler.instructions.iter();
-    let fetch_vsp_instruction =
-        instruction_iter.find(|insn| {
-                            match_fetch_reg_any_size(insn, reg_allocation.vsp.into()).is_some()
-                        })?;
-
-    let fetch_register = fetch_vsp_instruction.op0_register().full_register();
-
-    let mut fetch_size = 0;
-    instruction_iter.find(|insn| {
-                        if let Some(size) = match_fetch_zx_reg_any_size(insn, fetch_register) {
-                            fetch_size = size;
-                            true
-                        } else {
-                            false
-                        }
-                    })?;
-
-    Some(fetch_size)
-}
 fn vm_match_push_vsp(vm_handler: &VmHandler,
                      reg_allocation: &VmRegisterAllocation)
                      -> Option<usize> {

@@ -5,7 +5,7 @@ use haybale::{
 };
 
 pub fn get_possible_solutions(function_name: &str) -> Result<Vec<u64>, Box<dyn Error>> {
-    let project = Project::from_bc_path("/home/jim/rust_projects/vmp3_disasm/devirt.bc")?;
+    let project = Project::from_bc_path("devirt.bc")?;
 
     println!("Pointer size = {}", project.pointer_size_bits());
     let mut config: Config<haybale::backend::DefaultBackend> = Default::default();

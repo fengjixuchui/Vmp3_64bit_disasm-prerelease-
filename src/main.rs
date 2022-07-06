@@ -19,7 +19,8 @@ use petgraph::{algo::dominators, graphmap::GraphMap, EdgeDirection::Incoming};
 use vm_handler::VmContext;
 
 use crate::{
-    llvm_ir_gen::VmLifter, symbolic::get_possible_solutions, vm_matchers::HandlerVmInstruction, vm_handler::Registers,
+    llvm_ir_gen::VmLifter, symbolic::get_possible_solutions, vm_handler::Registers,
+    vm_matchers::HandlerVmInstruction,
 };
 
 fn parse_hex_vm_call(input_str: &str) -> Result<u64, std::num::ParseIntError> {
@@ -62,13 +63,47 @@ fn main() -> Result<(), Box<dyn Error>> {
         let helper_stub = vm_lifter.create_helper_stub(vm_context.initial_vip);
         vm_lifter.lift_into_helper_stub(&vm_context, &handlers, &helper_stub);
 
-        let next_vips = vm_lifter.slice_vip(&control_flow_graph, vm_context.initial_vip, vm_context.initial_vip, &handlers)?;
-        println!("{:#x?}", next_vips);
-        
-        let mut new_vm_context = vm_context.new_from_jump_handler(vm_context.handler_address, next_vips[0], false, &pe_file, &pe_bytes);
+        let next_vips = vm_lifter.slice_vip(&control_flow_graph,
+                                            vm_context.initial_vip,
+                                            vm_context.initial_vip,
+                                            &handlers)?;
+
+        let mut new_vm_context = vm_context.new_from_jump_handler(vm_context.handler_address,
+                                                                  next_vips[0],
+                                                                  false,
+                                                                  false,
+                                                                  &pe_file,
+                                                                  &pe_bytes);
         let new_handlers = new_vm_context.disassemble_context(&pe_file, &pe_bytes);
 
+        println!("{:#?}", new_vm_context);
 
+        let helper_stub = vm_lifter.create_helper_stub(new_vm_context.initial_vip);
+        vm_lifter.lift_into_helper_stub(&new_vm_context, &new_handlers, &helper_stub);
+
+        let next_vips = vm_lifter.slice_vip(&control_flow_graph,
+                                            new_vm_context.initial_vip,
+                                            vm_context.initial_vip,
+                                            &handlers)?;
+
+        let mut new_vm_context = vm_context.new_from_jump_handler(new_vm_context.handler_address,
+                                                                  next_vips[0],
+                                                                  false,
+                                                                  false,
+                                                                  &pe_file,
+                                                                  &pe_bytes);
+
+        println!("{:#?}", new_vm_context);
+
+        let new_handlers = new_vm_context.disassemble_context(&pe_file, &pe_bytes);
+
+        let helper_stub = vm_lifter.create_helper_stub(new_vm_context.initial_vip);
+        vm_lifter.lift_into_helper_stub(&new_vm_context, &new_handlers, &helper_stub);
+
+        let next_vips = vm_lifter.slice_vip(&control_flow_graph,
+                                            new_vm_context.initial_vip,
+                                            vm_context.initial_vip,
+                                            &handlers)?;
     }
 
     Ok(())

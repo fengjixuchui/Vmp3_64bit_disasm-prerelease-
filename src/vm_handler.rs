@@ -22,6 +22,9 @@ pub struct VmRegisterAllocation {
     pub handler_address: Registers,
 }
 
+/// Describes a vm context that is it holds the internal state and the register
+/// allocation of the vm, the register allocation changes between jumps, so a
+/// new VmContext needs to be made when a jump occurs
 #[derive(Debug, Clone)]
 pub struct VmContext {
     /// Register allocation of the vm
@@ -49,14 +52,18 @@ pub struct VmContext {
 }
 
 impl VmContext {
+    /// Create a new VmContext from a vm_entry handler
     pub fn new_from_vm_entry(pe_file: &PeFile,
                              pe_bytes: &[u8],
                              vm_call_address: u64)
                              -> Self {
+        // Get the pushed value and the vm entry handler address
         let (pushed_val, vm_entry_address) = handle_vm_call(pe_file, pe_bytes, vm_call_address);
 
+        // Collect the instructions of the vm_entry into a VmHandler
         let vm_entry_handler = VmHandler::new(vm_entry_address, pe_file, pe_bytes);
 
+        // Get the native register push order
         let push_order = vm_entry_handler.get_push_order_vm_entry();
 
         let register_allocation = vm_entry_handler.get_register_allocation_vm_entry();
@@ -77,6 +84,7 @@ impl VmContext {
         let mut instruction_iter = instruction_iter.skip_while(|insn| {
                                                        !(insn.code() == Code::Lea_r64_m &&
                                                          insn.memory_displacement64() != 0 &&
+                                                         // This is to fix devirtualizeme
                                                          insn.memory_displacement64() !=
                                                          0x100000000)
                                                    });
@@ -126,6 +134,7 @@ impl VmContext {
                                  jump_handler_address: u64,
                                  jump_target_vip: u64,
                                  direction_is_forwards: bool,
+                                 changed_vsp: bool,
                                  pe_file: &PeFile,
                                  pe_bytes: &[u8])
                                  -> Self {
@@ -133,7 +142,8 @@ impl VmContext {
 
         let vm_jump_handler = VmHandler::new(jump_handler_address, pe_file, pe_bytes);
 
-        vm_jump_handler.get_register_allocation_vm_jump(&mut new_vm_context.register_allocation);
+        vm_jump_handler.get_register_allocation_vm_jump(changed_vsp,
+                                                        &mut new_vm_context.register_allocation);
 
         // Rolling key is initialized to the initial vip
         let mut vip = if direction_is_forwards {
@@ -217,8 +227,7 @@ impl VmContext {
                 HandlerClass::NoVipChange => {
                     println!("Disassembled no vip change");
                     println!("[Stopping]");
-                    handler_instruction =
-                        vm_handler.match_no_vip_change_instructions(&self.register_allocation);
+                    handler_instruction = vm_handler.match_no_vip_change_instructions(self);
                     halt = true;
                 },
                 HandlerClass::ByteOperand => {
@@ -646,6 +655,7 @@ impl VmHandler {
     }
 
     pub fn get_register_allocation_vm_jump(&self,
+                                           changed_vsp: bool,
                                            old_register_allocation: &mut VmRegisterAllocation) {
         let mut instruction_iter = self.instructions.iter();
         let mov_to_vip =
@@ -660,12 +670,17 @@ impl VmHandler {
                                 match_add_vsp_get_amount(insn, old_register_allocation).is_some()
                             });
 
-        let mov_vip = instruction_iter.find(|insn| {
-                                          match_mov_reg2_in_reg1(insn,
-                                                                 old_register_allocation.vip.into(),
-                                                                 new_vip).is_some()
-                                      });
+        let mov_vip = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
         let new_vip = mov_vip.unwrap().op0_register().full_register();
+
+        if changed_vsp {
+            let mov_vsp =
+                instruction_iter.find(|insn| {
+                                    match_mov_reg_source(insn, old_register_allocation.vsp.into())
+                                });
+            let new_vsp = mov_vsp.unwrap().op0_register().full_register();
+            old_register_allocation.vsp = new_vsp.into();
+        }
 
         let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
 

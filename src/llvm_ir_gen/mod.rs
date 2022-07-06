@@ -10,12 +10,19 @@ use inkwell::{
     },
 };
 use pelite::pe64::PeFile;
-use petgraph::{graphmap::GraphMap, algo::dominators, EdgeDirection::Incoming};
-use std::{borrow::Borrow, cell::RefCell, error::Error, path::Path, collections::{HashSet, HashMap}};
+use petgraph::{algo::dominators, graphmap::GraphMap, EdgeDirection::Incoming};
+use std::{
+    borrow::Borrow,
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    error::Error,
+    path::Path,
+};
 
 use crate::{
+    symbolic::get_possible_solutions,
     vm_handler::{Registers, VmContext},
-    vm_matchers::HandlerVmInstruction, symbolic::get_possible_solutions,
+    vm_matchers::HandlerVmInstruction,
 };
 pub struct VmLifter<'ctx> {
     context: &'ctx Context,
@@ -28,8 +35,8 @@ impl<'ctx> VmLifter<'ctx> {
                      control_flow_graph: &GraphMap<u64, (), petgraph::Directed>,
                      mut input_vip: u64,
                      root_vip: u64,
-                     block_handlers: &[(u64, HandlerVmInstruction)]) -> Result<Vec<u64>, Box<dyn Error>> {
-
+                     block_handlers: &[(u64, HandlerVmInstruction)])
+                     -> Result<Vec<u64>, Box<dyn Error>> {
         self.output_module();
 
         let mut slice_blocks = vec![input_vip];
@@ -67,9 +74,7 @@ impl<'ctx> VmLifter<'ctx> {
         self.optimize_module();
         self.output_bitcode();
 
-        let possible_solutions_vip =
-            get_possible_solutions("helperslicevpc")?;
-
+        let possible_solutions_vip = get_possible_solutions("helperslicevpc")?;
 
         let mut solutions_return = Vec::new();
         for pos_sol in possible_solutions_vip.iter() {
@@ -94,8 +99,6 @@ impl<'ctx> VmLifter<'ctx> {
                 solutions_return.push(*pos_sol);
             }
         }
-
-
 
         self.reload_module();
 
@@ -329,6 +332,12 @@ impl<'ctx> VmLifter<'ctx> {
                 self.lift_jump_sem(vm_context, helper_stub, "JUMP_DEC");
             },
             HandlerVmInstruction::JumpInc => {
+                self.lift_jump_sem(vm_context, helper_stub, "JUMP_INC");
+            },
+            HandlerVmInstruction::JumpDecVspChange => {
+                self.lift_jump_sem(vm_context, helper_stub, "JUMP_DEC");
+            },
+            HandlerVmInstruction::JumpIncVspChange => {
                 self.lift_jump_sem(vm_context, helper_stub, "JUMP_INC");
             },
             HandlerVmInstruction::UnknownByteOperand => todo!("Unkwnown handler"),
@@ -812,8 +821,7 @@ impl<'ctx> VmLifter<'ctx> {
     }
 
     pub fn create_helper_slicevpc(&self,
-                                  vips: &[u64]
-                                  ) {
+                                  vips: &[u64]) {
         let start_vip = vips[0];
 
         let helper_function_def = self.module
@@ -843,9 +851,7 @@ impl<'ctx> VmLifter<'ctx> {
 
         let helper_slicevpc = self.module
                                   .borrow()
-                                  .add_function("helperslicevpc",
-                                                helper_function_type,
-                                                None);
+                                  .add_function("helperslicevpc", helper_function_type, None);
         let param_names = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9",
                            "r10", "r11", "r12", "r13", "r14", "r15", "flags", "KEY_STUB",
                            "RET_ADDR", "REL_ADDR"];
@@ -936,32 +942,33 @@ impl<'ctx> VmLifter<'ctx> {
                                   .get_function(&format!("helperstub_{:x}", stub_vip))
                                   .unwrap();
 
-            let temp = self.builder.build_call(helper_stub,
-                                               &[helper_slicevpc.get_nth_param(0).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(1).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(2).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(3).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(4).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(5).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(6).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(7).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(8).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(9).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(10).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(11).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(12).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(13).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(14).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(15).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(16).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(17).unwrap().into(),
-                                                 helper_slicevpc.get_nth_param(18).unwrap().into(),
-                                                 i64_type.const_int(0, false).into(),
-                                                 helper_slicevpc.get_nth_param(7).unwrap().into(),
-                                                 vip.into(),
-                                                 array_decay.into(),
-                                                 array_decay1.into()],
-                                               "call");
+            let temp =
+                self.builder.build_call(helper_stub,
+                                        &[helper_slicevpc.get_nth_param(0).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(1).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(2).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(3).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(4).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(5).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(6).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(7).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(8).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(9).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(10).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(11).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(12).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(13).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(14).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(15).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(16).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(17).unwrap().into(),
+                                          helper_slicevpc.get_nth_param(18).unwrap().into(),
+                                          i64_type.const_int(0, false).into(),
+                                          helper_slicevpc.get_nth_param(7).unwrap().into(),
+                                          vip.into(),
+                                          array_decay.into(),
+                                          array_decay1.into()],
+                                        "call");
 
             call = Some(temp);
         }
