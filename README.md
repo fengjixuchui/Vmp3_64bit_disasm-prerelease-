@@ -1,5 +1,4 @@
 # Vmp3_64bit_disasm-prerelease- WIP WIP WIP
-## Lifting to LLVM now supported with the --gen-ir flag!
 Not all handlers supported yet!
 No support for branching yet!
 Comming soon !
