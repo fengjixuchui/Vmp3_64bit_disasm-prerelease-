@@ -7,12 +7,13 @@ use haybale::{
 pub fn get_possible_solutions(function_name: &str) -> Result<Vec<u64>, Box<dyn Error>> {
     let project = Project::from_bc_path("devirt.bc")?;
 
-    println!("Pointer size = {}", project.pointer_size_bits());
+    // println!("Pointer size = {}", project.pointer_size_bits());
+
     let mut config: Config<haybale::backend::DefaultBackend> = Default::default();
     config.null_pointer_checking = NullPointerChecking::None;
 
     config.function_hooks.add("llvm.ctpop.i8", &|state, call| {
-                             let arguments = call.get_arguments();
+                             let _arguments = call.get_arguments();
                              Ok(ReturnValue::Return(state.new_bv_with_name("ctpop".into(),
                                                                            8)
                                                          .unwrap()))
@@ -27,9 +28,9 @@ pub fn get_possible_solutions(function_name: &str) -> Result<Vec<u64>, Box<dyn E
     match possible_solutions {
         haybale::solver_utils::PossibleSolutions::Exactly(solutions) => {
             for solution in solutions {
-                let solution = match solution {
+                match solution {
                     ReturnValue::Return(value) => {
-                        println!("Branch target -> {:x}", value);
+                        // println!("Branch target -> {:x}", value);
                         solutions_return.push(value);
                     },
                     ReturnValue::ReturnVoid => panic!(),

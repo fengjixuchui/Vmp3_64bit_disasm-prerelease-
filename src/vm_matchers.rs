@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use iced_x86::{Code, Register, Instruction};
+use iced_x86::{Code, Instruction, Register};
 
 use crate::{
     match_assembly::*,
@@ -398,8 +398,6 @@ fn vm_match_jmp_dec(vm_handler: &VmHandler,
         return false;
     }
 
-    let new_key_register = store_key_reg.unwrap().op0_register();
-
     instruction_iter.any(|insn| match_sub_reg_by_amount(insn, new_vip, 4))
 }
 
@@ -432,18 +430,11 @@ fn vm_match_jmp_inc(vm_handler: &VmHandler,
     let mov_vip = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
     let new_vip = mov_vip.unwrap().op0_register().full_register();
 
-    let mov_vsp =
-        instruction_iter.find(|insn| {
-                            match_mov_reg_source(insn, vm_context.register_allocation.vsp.into())
-                        });
-
     let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
 
     if store_key_reg.is_none() {
         return false;
     }
-
-    let new_key_register = store_key_reg.unwrap().op0_register();
 
     instruction_iter.any(|insn| match_add_reg_by_amount(insn, new_vip, 4))
 }
@@ -477,17 +468,16 @@ fn vm_match_jmp_dec_vsp_change(vm_handler: &VmHandler,
     let mov_vip = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
     let new_vip = mov_vip.unwrap().op0_register().full_register();
 
-    let mov_vsp =
+    let _mov_vsp =
         instruction_iter.find(|insn| {
                             match_mov_reg_source(insn, vm_context.register_allocation.vsp.into())
                         });
+
     let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
 
     if store_key_reg.is_none() {
         return false;
     }
-
-    let new_key_register = store_key_reg.unwrap().op0_register();
 
     instruction_iter.any(|insn| match_sub_reg_by_amount(insn, new_vip, 4))
 }
@@ -521,17 +511,19 @@ fn vm_match_jmp_inc_vsp_change(vm_handler: &VmHandler,
     let mov_vip = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
     let new_vip = mov_vip.unwrap().op0_register().full_register();
 
+    let _mov_vsp =
+        instruction_iter.find(|insn| {
+                            match_mov_reg_source(insn, vm_context.register_allocation.vsp.into())
+                        });
+
     let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
 
     if store_key_reg.is_none() {
         return false;
     }
 
-    let new_key_register = store_key_reg.unwrap().op0_register();
-
     instruction_iter.any(|insn| match_add_reg_by_amount(insn, new_vip, 4))
 }
-
 
 /// Match a pop of a vmregister
 fn vm_match_vm_reg_pop(vm_handler: &VmHandler,
@@ -559,7 +551,7 @@ fn vm_match_vm_reg_push(vm_handler: &VmHandler,
 
     let index_reg = vip_byte_fetch_instruction.op0_register().full_register();
 
-    instruction_iter.find(|insn| match_fetch_vm_reg(insn, index_reg, reg_allocation))?;
+    instruction_iter.find(|insn| match_fetch_vm_reg(insn, index_reg))?;
 
     let sub_vsp_instruction =
         instruction_iter.find(|insn| match_sub_vsp_get_amount(insn, reg_allocation).is_some());
@@ -573,12 +565,12 @@ fn vm_match_vm_reg_push(vm_handler: &VmHandler,
 
 /// Match a n byte imm push
 fn match_push_imm_n<const N: u32>(vm_handler: &VmHandler,
-                                    reg_allocation: &VmRegisterAllocation) -> bool {
+                                  reg_allocation: &VmRegisterAllocation)
+                                  -> bool {
     let mut instruction_iter = vm_handler.instructions.iter();
     instruction_iter.find(|insn| match_sub_vsp_by_amount(insn, reg_allocation, N));
     instruction_iter.any(|insn| match_store_reg_any_size(insn, reg_allocation.vsp.into()).is_some())
 }
-
 
 /// Match 64 bit imm push
 fn vm_match_push_imm64(vm_handler: &VmHandler,
@@ -609,7 +601,6 @@ fn vm_match_push_imm8(vm_handler: &VmHandler,
     match_push_imm_n::<2>(vm_handler, reg_allocation)
 }
 
-
 fn vm_match_pop_vsp_64(vm_handler: &VmHandler,
                        reg_allocation: &VmRegisterAllocation)
                        -> bool {
@@ -628,7 +619,7 @@ fn vm_match_pop_vsp_64(vm_handler: &VmHandler,
 
 macro_rules! generate_binop_match {
     ($matcher_name:ident, $specific_matcher:expr) => {
-        
+
         fn $matcher_name(vm_handler: &VmHandler,
                         reg_allocation: &VmRegisterAllocation)
                         -> Option<usize> {
@@ -659,7 +650,7 @@ macro_rules! generate_binop_match {
 
 macro_rules! generate_binop_match_byte {
     ($matcher_name:ident, $specific_matcher:expr) => {
-        
+
         fn $matcher_name(vm_handler: &VmHandler,
                         reg_allocation: &VmRegisterAllocation)
                         -> Option<usize> {
@@ -688,29 +679,44 @@ macro_rules! generate_binop_match_byte {
     };
 }
 
-fn sub_match_add<'a, I>(instruction_iter: &mut I, reg1: Register, reg2: Register) -> Option<&'a Instruction> 
-where I: Iterator<Item=&'a Instruction>{
-     instruction_iter.find(|insn| match_add_reg_reg(insn, reg1, reg2))
+fn sub_match_add<'a, I>(instruction_iter: &mut I,
+                        reg1: Register,
+                        reg2: Register)
+                        -> Option<&'a Instruction>
+    where I: Iterator<Item = &'a Instruction>
+{
+    instruction_iter.find(|insn| match_add_reg_reg(insn, reg1, reg2))
 }
 generate_binop_match!(vm_match_add, sub_match_add);
 generate_binop_match_byte!(vm_match_add_byte, sub_match_add);
 
-fn sub_match_mul<'a, I>(instruction_iter: &mut I, reg1: Register, reg2: Register) -> Option<&'a Instruction> 
-where I: Iterator<Item=&'a Instruction>{
+fn sub_match_mul<'a, I>(instruction_iter: &mut I,
+                        reg1: Register,
+                        reg2: Register)
+                        -> Option<&'a Instruction>
+    where I: Iterator<Item = &'a Instruction>
+{
     instruction_iter.find(|insn| match_mul_reg_reg(insn, reg1, reg2))
 }
 
-fn sub_match_imul<'a, I>(instruction_iter: &mut I, reg1: Register, reg2: Register) -> Option<&'a Instruction> 
-where I: Iterator<Item=&'a Instruction>{
+fn sub_match_imul<'a, I>(instruction_iter: &mut I,
+                         reg1: Register,
+                         reg2: Register)
+                         -> Option<&'a Instruction>
+    where I: Iterator<Item = &'a Instruction>
+{
     instruction_iter.find(|insn| match_imul_reg_reg(insn, reg1, reg2))
 }
 
 generate_binop_match!(vm_match_mul, sub_match_mul);
 generate_binop_match!(vm_match_imul, sub_match_imul);
 
-
-fn sub_match_nand<'a, I>(instruction_iter: &mut I, reg1: Register, reg2: Register) -> Option<&'a Instruction> 
-where I: Iterator<Item=&'a Instruction>{
+fn sub_match_nand<'a, I>(instruction_iter: &mut I,
+                         reg1: Register,
+                         reg2: Register)
+                         -> Option<&'a Instruction>
+    where I: Iterator<Item = &'a Instruction>
+{
     instruction_iter.find(|insn| match_not_reg(insn, reg1))?;
     instruction_iter.find(|insn| match_not_reg(insn, reg2))?;
 
@@ -720,8 +726,12 @@ where I: Iterator<Item=&'a Instruction>{
 generate_binop_match!(vm_match_nand, sub_match_nand);
 generate_binop_match_byte!(vm_match_nand_byte, sub_match_nand);
 
-fn sub_match_nor<'a, I>(instruction_iter: &mut I, reg1: Register, reg2: Register) -> Option<&'a Instruction> 
-where I: Iterator<Item=&'a Instruction>{
+fn sub_match_nor<'a, I>(instruction_iter: &mut I,
+                        reg1: Register,
+                        reg2: Register)
+                        -> Option<&'a Instruction>
+    where I: Iterator<Item = &'a Instruction>
+{
     instruction_iter.find(|insn| match_not_reg(insn, reg1))?;
     instruction_iter.find(|insn| match_not_reg(insn, reg2))?;
 
@@ -731,10 +741,9 @@ where I: Iterator<Item=&'a Instruction>{
 generate_binop_match!(vm_match_nor, sub_match_nor);
 generate_binop_match_byte!(vm_match_nor_byte, sub_match_nor);
 
-
 macro_rules! generate_binop_match_single_reg {
     ($matcher_name:ident, $specific_matcher:expr) => {
-        
+
         fn $matcher_name(vm_handler: &VmHandler,
                         reg_allocation: &VmRegisterAllocation)
                         -> Option<usize> {
@@ -764,7 +773,7 @@ macro_rules! generate_binop_match_single_reg {
 
 macro_rules! generate_binop_match_byte_single_reg {
     ($matcher_name:ident, $specific_matcher:expr) => {
-        
+
         fn $matcher_name(vm_handler: &VmHandler,
                         reg_allocation: &VmRegisterAllocation)
                         -> Option<usize> {
@@ -792,17 +801,22 @@ macro_rules! generate_binop_match_byte_single_reg {
     };
 }
 
-fn sub_match_shr<'a, I>(instruction_iter: &mut I, reg: Register) -> Option<&'a Instruction> 
-where I: Iterator<Item=&'a Instruction>{
+fn sub_match_shr<'a, I>(instruction_iter: &mut I,
+                        reg: Register)
+                        -> Option<&'a Instruction>
+    where I: Iterator<Item = &'a Instruction>
+{
     instruction_iter.find(|insn| match_shr_reg_reg(insn, reg))
 }
-
 
 generate_binop_match_single_reg!(vm_match_shr, sub_match_shr);
 generate_binop_match_byte_single_reg!(vm_match_shr_byte, sub_match_shr);
 
-fn sub_match_shl<'a, I>(instruction_iter: &mut I, reg: Register) -> Option<&'a Instruction> 
-where I: Iterator<Item=&'a Instruction>{
+fn sub_match_shl<'a, I>(instruction_iter: &mut I,
+                        reg: Register)
+                        -> Option<&'a Instruction>
+    where I: Iterator<Item = &'a Instruction>
+{
     instruction_iter.find(|insn| match_shl_reg_reg(insn, reg))
 }
 
@@ -832,7 +846,6 @@ fn vm_match_fetch(vm_handler: &VmHandler,
 
     Some(fetch_size)
 }
-
 
 fn vm_match_fetch_byte(vm_handler: &VmHandler,
                        reg_allocation: &VmRegisterAllocation)

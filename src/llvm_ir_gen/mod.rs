@@ -4,20 +4,13 @@ use inkwell::{
     context::Context,
     memory_buffer::MemoryBuffer,
     module::Module,
-    passes::{PassManager, PassManagerBuilder},
+    passes::PassManager,
     values::{
         BasicValue, BasicValueEnum, CallableValue, FunctionValue, InstructionValue, PointerValue,
     },
 };
-use pelite::pe64::PeFile;
 use petgraph::{algo::dominators, graphmap::GraphMap, EdgeDirection::Incoming};
-use std::{
-    borrow::Borrow,
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    error::Error,
-    path::Path,
-};
+use std::{cell::RefCell, collections::HashSet, error::Error, path::Path};
 
 use crate::{
     symbolic::get_possible_solutions,
@@ -31,11 +24,17 @@ pub struct VmLifter<'ctx> {
 }
 // This leaks memory :(
 impl<'ctx> VmLifter<'ctx> {
+    pub fn lift_helper_stub(&self,
+                            vm_context: &VmContext,
+                            handlers: &[(u64, HandlerVmInstruction, u64)]) {
+        let helper_stub = self.create_helper_stub(vm_context.initial_vip);
+        self.lift_into_helper_stub(vm_context, handlers, &helper_stub);
+    }
+
     pub fn slice_vip(&self,
                      control_flow_graph: &GraphMap<u64, (), petgraph::Directed>,
                      mut input_vip: u64,
-                     root_vip: u64,
-                     block_handlers: &[(u64, HandlerVmInstruction)])
+                     root_vip: u64)
                      -> Result<Vec<u64>, Box<dyn Error>> {
         self.output_module();
 
@@ -48,7 +47,7 @@ impl<'ctx> VmLifter<'ctx> {
                                                .map(|edge| edge.0)
                                                .collect::<HashSet<u64>>();
 
-            if pred_nodes.len() == 0 {
+            if pred_nodes.is_empty() {
                 break 'outer;
             }
 
@@ -68,41 +67,15 @@ impl<'ctx> VmLifter<'ctx> {
             slice_blocks.extend_from_slice(&temp_slice_blocks);
         }
 
-        println!("{:x?}", slice_blocks);
-
         self.create_helper_slicevpc(&slice_blocks);
         self.optimize_module();
         self.output_bitcode();
 
         let possible_solutions_vip = get_possible_solutions("helperslicevpc")?;
 
-        let mut solutions_return = Vec::new();
-        for pos_sol in possible_solutions_vip.iter() {
-            if block_handlers.iter().any(|(vip, _)| vip == pos_sol) {
-                println!("Vip -> {:x} already visited", pos_sol);
-                continue;
-            } else {
-                let direction = match block_handlers.last() {
-                    Some((_, HandlerVmInstruction::JumpInc)) => true,
-                    Some((_, HandlerVmInstruction::JumpDec)) => false,
-                    Some((_, HandlerVmInstruction::VmExit)) => continue,
+        self.reload_module()?;
 
-                    Some((_, insn)) => {
-                        dbg!(insn);
-                        panic!("Instruction not matched {}", insn);
-                    },
-                    None => {
-                        panic!("Yep this is no good")
-                    },
-                };
-
-                solutions_return.push(*pos_sol);
-            }
-        }
-
-        self.reload_module();
-
-        Ok(solutions_return)
+        Ok(possible_solutions_vip)
     }
 
     #[allow(dead_code)]
@@ -110,6 +83,7 @@ impl<'ctx> VmLifter<'ctx> {
         self.module.borrow().print_to_stderr();
     }
 
+    #[allow(dead_code)]
     pub fn verify_module(&self) {
         self.module.borrow().verify().unwrap();
     }
@@ -120,7 +94,7 @@ impl<'ctx> VmLifter<'ctx> {
 
     pub fn reload_module(&self) -> Result<(), Box<dyn Error>> {
         let path = Path::new("devirt.ll");
-        let memory_buffer = MemoryBuffer::create_from_file(&path)?;
+        let memory_buffer = MemoryBuffer::create_from_file(path)?;
         let new_module = self.context.create_module_from_ir(memory_buffer)?;
 
         *self.module.borrow_mut() = new_module;
@@ -134,6 +108,7 @@ impl<'ctx> VmLifter<'ctx> {
             .write_bitcode_to_path(std::path::Path::new("devirt.bc"));
     }
 
+    #[allow(dead_code)]
     pub fn print_function(&self,
                           func_name: &str) {
         let function = self.module.borrow().get_function(func_name);
@@ -204,6 +179,7 @@ impl<'ctx> VmLifter<'ctx> {
         ram.set_constant(true);
     }
 
+    #[allow(dead_code)]
     pub fn fix_arg_names(&self,
                          helper_function_name: &str) {
         let helper_function = self.module
@@ -224,9 +200,9 @@ impl<'ctx> VmLifter<'ctx> {
             }
         }
     }
-    pub fn create_helper_stub(&self,
-                              start_vip: u64)
-                              -> FunctionValue {
+    fn create_helper_stub(&self,
+                          start_vip: u64)
+                          -> FunctionValue {
         let helper_stub_def = self.module
                                   .borrow()
                                   .get_function("HelperStub")
@@ -329,16 +305,16 @@ impl<'ctx> VmLifter<'ctx> {
                 self.lift_vm_exit(vm_context, helper_stub);
             },
             HandlerVmInstruction::JumpDec => {
-                self.lift_jump_sem(vm_context, helper_stub, "JUMP_DEC");
+                self.lift_jump_sem(helper_stub, "JUMP_DEC");
             },
             HandlerVmInstruction::JumpInc => {
-                self.lift_jump_sem(vm_context, helper_stub, "JUMP_INC");
+                self.lift_jump_sem(helper_stub, "JUMP_INC");
             },
             HandlerVmInstruction::JumpDecVspChange => {
-                self.lift_jump_sem(vm_context, helper_stub, "JUMP_DEC");
+                self.lift_jump_sem(helper_stub, "JUMP_DEC");
             },
             HandlerVmInstruction::JumpIncVspChange => {
-                self.lift_jump_sem(vm_context, helper_stub, "JUMP_INC");
+                self.lift_jump_sem(helper_stub, "JUMP_INC");
             },
             HandlerVmInstruction::UnknownByteOperand => todo!("Unkwnown handler"),
             HandlerVmInstruction::UnknownWordOperand => todo!("Unkwnown handler"),
@@ -351,7 +327,6 @@ impl<'ctx> VmLifter<'ctx> {
     }
 
     fn lift_jump_sem(&self,
-                     vm_context: &VmContext,
                      stub_function: &FunctionValue,
                      semantic_name: &str) {
         let vsp = get_param_vsp(stub_function);
@@ -635,21 +610,22 @@ impl<'ctx> VmLifter<'ctx> {
             .build_call(sem_push_imm64, &[vsp.into(), reloc.into()], "");
     }
 
-    pub fn lift_into_helper_stub(&self,
-                                 vm_context: &VmContext,
-                                 handlers: &[(u64, HandlerVmInstruction)],
-                                 helper_stub: &FunctionValue) {
+    fn lift_into_helper_stub(&self,
+                             vm_context: &VmContext,
+                             handlers: &[(u64, HandlerVmInstruction, u64)],
+                             helper_stub: &FunctionValue) {
         let entry_bb = helper_stub.get_basic_blocks()[0];
         let first_instruction = entry_bb.get_first_instruction().unwrap();
         self.builder.position_before(&first_instruction);
 
         self.lift_vm_entry(vm_context, helper_stub);
 
-        for (_, handler) in handlers.iter() {
+        for (_, handler, _) in handlers.iter() {
             self.lift_vm_instruction(vm_context, handler, helper_stub);
         }
     }
 
+    #[allow(dead_code)]
     pub fn create_helper_function(&self,
                                   start_vip: u64) {
         let helper_function_def = self.module

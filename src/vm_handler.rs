@@ -1,12 +1,5 @@
 use crate::{
-    match_assembly::{
-        match_add_vsp_get_amount, match_fetch_encrypted_vip, match_fetch_reg_any_size,
-        match_fetch_vip, match_mov_reg2_in_reg1, match_mov_reg_source, match_push_rolling_key,
-        match_xor_16_rolling_key_dest, match_xor_16_rolling_key_source,
-        match_xor_32_rolling_key_source, match_xor_64_rolling_key_dest,
-        match_xor_64_rolling_key_source, match_xor_8_rolling_key_dest,
-        match_xor_8_rolling_key_source,
-    },
+    match_assembly::*,
     transforms::{get_transform_for_instruction, EmulateEncryption, EmulateTransform},
     util::*,
     vm_matchers::{self, HandlerClass, HandlerVmInstruction},
@@ -73,7 +66,7 @@ impl VmContext {
         // Get the initial_vip
         let initial_vip =
             vm_entry_handler.get_initial_vip(&register_allocation, pushed_val) + 0x100000000;
-        println!("The initial vip is -> {:x}", initial_vip);
+
         let mut vip = initial_vip;
 
         // Rolling key is initialized to the initial vip
@@ -89,7 +82,7 @@ impl VmContext {
                                                          0x100000000)
                                                    });
         let handler_base_address = instruction_iter.next().unwrap().memory_displacement64();
-        println!("{:x}", handler_base_address);
+
         let mut instruction_iter =
             instruction_iter.skip_while(|insn| !match_fetch_vip(insn, &register_allocation));
 
@@ -131,13 +124,20 @@ impl VmContext {
     }
 
     pub fn new_from_jump_handler(&self,
-                                 jump_handler_address: u64,
+                                 last_handler: &(u64, HandlerVmInstruction, u64),
                                  jump_target_vip: u64,
-                                 direction_is_forwards: bool,
-                                 changed_vsp: bool,
                                  pe_file: &PeFile,
                                  pe_bytes: &[u8])
                                  -> Self {
+        let jump_handler_address = last_handler.2;
+        let (direction_is_forwards, changed_vsp) = match last_handler.1 {
+            HandlerVmInstruction::JumpDecVspChange => (false, true),
+            HandlerVmInstruction::JumpIncVspChange => (true, true),
+            HandlerVmInstruction::JumpDec => (false, false),
+            HandlerVmInstruction::JumpInc => (true, false),
+            _ => panic!("Not a branch instruction"),
+        };
+
         let mut new_vm_context = self.clone();
 
         let vm_jump_handler = VmHandler::new(jump_handler_address, pe_file, pe_bytes);
@@ -200,7 +200,7 @@ impl VmContext {
     pub fn disassemble_context(&mut self,
                                pe_file: &PeFile,
                                pe_bytes: &[u8])
-                               -> Vec<(u64, HandlerVmInstruction)> {
+                               -> Vec<(u64, HandlerVmInstruction, u64)> {
         let mut handlers = Vec::new();
 
         println!("{:<15} | {:<30} | Handler address", "VIP", "Disassembly");
@@ -217,23 +217,18 @@ impl VmContext {
 
             match handler_class {
                 HandlerClass::UnconditionalBranch => {
-                    println!("Disassembled unconditional branch");
-                    println!("[Stopping]");
-
                     handler_instruction = vm_handler.match_branch_instructions(self);
 
                     halt = true;
                 },
                 HandlerClass::NoVipChange => {
-                    println!("Disassembled no vip change");
-                    println!("[Stopping]");
                     handler_instruction = vm_handler.match_no_vip_change_instructions(self);
                     halt = true;
                 },
                 HandlerClass::ByteOperand => {
                     //println!("Disassembled single byte operand");
                     let byte_operand =
-                        self.disassemble_single_byte_operand(&vm_handler, &pe_file, &pe_bytes);
+                        self.disassemble_single_byte_operand(&vm_handler, pe_file, pe_bytes);
                     handler_instruction =
                         vm_handler.match_byte_operand_instructions(&self.register_allocation,
                                                                    byte_operand);
@@ -241,7 +236,7 @@ impl VmContext {
                 HandlerClass::WordOperand => {
                     //println!("Disassembled single word operand");
                     let word_operand =
-                        self.disassemble_single_word_operand(&vm_handler, &pe_file, &pe_bytes);
+                        self.disassemble_single_word_operand(&vm_handler, pe_file, pe_bytes);
                     handler_instruction =
                         vm_handler.match_word_operand_instructions(&self.register_allocation,
                                                                    word_operand);
@@ -249,7 +244,7 @@ impl VmContext {
                 HandlerClass::DwordOperand => {
                     //println!("Disassembled single dword operand");
                     let dword_operand =
-                        self.disassemble_single_dword_operand(&vm_handler, &pe_file, &pe_bytes);
+                        self.disassemble_single_dword_operand(&vm_handler, pe_file, pe_bytes);
                     handler_instruction =
                         vm_handler.match_dword_operand_instructions(&self.register_allocation,
                                                                     dword_operand);
@@ -257,19 +252,19 @@ impl VmContext {
                 HandlerClass::QwordOperand => {
                     //println!("Disassembled single qword operand");
                     let qword_operand =
-                        self.disassemble_single_qword_operand(&vm_handler, &pe_file, &pe_bytes);
+                        self.disassemble_single_qword_operand(&vm_handler, pe_file, pe_bytes);
                     handler_instruction =
                         vm_handler.match_qword_operand_instructions(&self.register_allocation,
                                                                     qword_operand);
                 },
                 HandlerClass::NoOperand => {
                     //println!("Disassembled no operand");
-                    self.disassemble_no_operand(&vm_handler, &pe_file, &pe_bytes);
+                    self.disassemble_no_operand(&vm_handler, pe_file, pe_bytes);
                     handler_instruction =
                         vm_handler.match_no_operand_instructions(&self.register_allocation);
                 },
             }
-            handlers.push((vip, handler_instruction));
+            handlers.push((vip, handler_instruction, handler_address));
             // This shit don't work if I combine them so fuck it
             println!("{:<15} | {:<30} | {:#x}",
                      format!("{:#x}", vip),
@@ -665,7 +660,7 @@ impl VmHandler {
 
         let new_vip = mov_to_vip.unwrap().op0_register().full_register();
 
-        let add_vsp_instruction =
+        let _add_vsp_instruction =
             instruction_iter.find(|insn| {
                                 match_add_vsp_get_amount(insn, old_register_allocation).is_some()
                             });

@@ -66,6 +66,7 @@ pub fn match_mov_reg_source(instruction: &Instruction,
     true
 }
 
+#[allow(dead_code)]
 pub fn match_mov_reg2_in_reg1(instruction: &Instruction,
                               reg1: Register,
                               reg2: Register)
@@ -344,8 +345,7 @@ pub fn match_store_reg_any_size(instruction: &Instruction,
 }
 
 pub fn match_fetch_vm_reg(instruction: &Instruction,
-                          index_reg: Register,
-                          vm_register_allocation: &VmRegisterAllocation)
+                          index_reg: Register)
                           -> bool {
     // Check the instruction opcode
     if instruction.code() != Code::Mov_r64_rm64 &&
