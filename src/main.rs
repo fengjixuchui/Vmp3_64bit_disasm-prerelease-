@@ -13,7 +13,9 @@ mod vm_handler;
 mod vm_matchers;
 
 use clap::Parser;
+use petgraph::dot::Config;
 use petgraph::graphmap::GraphMap;
+use petgraph::visit::NodeRef;
 use vm_handler::VmContext;
 
 use crate::llvm_ir_gen::VmLifter;
@@ -79,6 +81,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             continue;
         }
         
+        control_flow_graph.add_edge(vm_context.initial_vip, target_vip, ());
+        
         if last_handler.1 == HandlerVmInstruction::VmExit {
             continue;
         }
@@ -90,7 +94,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         // If this panics shit is fucked anyways
         let last_handler = *new_handlers.last().unwrap();
 
-        control_flow_graph.add_edge(vm_context.initial_vip, target_vip, ());
         // println!("{:#?}", new_vm_context);
 
         vm_lifter.lift_helper_stub(&new_vm_context, &new_handlers);
@@ -101,6 +104,10 @@ fn main() -> Result<(), Box<dyn Error>> {
            worklist.push_back((new_vm_context.clone(), last_handler, next_vip)) 
         }
     }
-
+    
+    println!("{:?}", petgraph::dot::Dot::with_attr_getters(&control_flow_graph,
+        &[Config::EdgeNoLabel, Config::NodeNoLabel],
+        &|_, _| {"".to_owned()},
+        &|_, node_ref| {format!("label = \"{:#x}\"", node_ref.weight())}));
     Ok(())
 }
