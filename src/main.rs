@@ -4,6 +4,13 @@ use std::error::Error;
 use pelite::pe64::PeFile;
 use pelite::FileMap;
 
+use clap::Parser;
+use std::io::Write;
+
+use petgraph::dot::Config;
+use petgraph::graphmap::GraphMap;
+use petgraph::visit::NodeRef;
+
 mod llvm_ir_gen;
 mod match_assembly;
 mod symbolic;
@@ -12,11 +19,8 @@ mod util;
 mod vm_handler;
 mod vm_matchers;
 
-use clap::Parser;
-use petgraph::dot::Config;
-use petgraph::graphmap::GraphMap;
-use petgraph::visit::NodeRef;
 use vm_handler::VmContext;
+
 
 use crate::llvm_ir_gen::VmLifter;
 use crate::vm_matchers::HandlerVmInstruction;
@@ -64,10 +68,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut worklist = VecDeque::new();
 
-    let next_vips = vm_lifter.slice_vip(&control_flow_graph, vm_context.initial_vip, root_vip)?;
+    if last_handler.1 != HandlerVmInstruction::VmExit {
+        let next_vips = vm_lifter.slice_vip(&control_flow_graph, vm_context.initial_vip, root_vip)?;
 
-    for target_vip in next_vips {
-        worklist.push_back((vm_context.clone(), last_handler, target_vip));
+        for target_vip in next_vips {
+            worklist.push_back((vm_context.clone(), last_handler, target_vip));
+        }
     }
 
     while !worklist.is_empty() {
@@ -78,6 +84,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             //FIXME reprove shit
             println!("\u{001b}[31mSkipping because already visited");
             println!("\u{001b}[0m");
+            todo!();
             continue;
         }
         
@@ -94,20 +101,36 @@ fn main() -> Result<(), Box<dyn Error>> {
         // If this panics shit is fucked anyways
         let last_handler = *new_handlers.last().unwrap();
 
+
         // println!("{:#?}", new_vm_context);
 
         vm_lifter.lift_helper_stub(&new_vm_context, &new_handlers);
+
+        // Skip slicing since exit
+        if last_handler.1 == HandlerVmInstruction::VmExit {
+            continue;
+        }
+
         let next_vips = vm_lifter.slice_vip(&control_flow_graph,
                                             new_vm_context.initial_vip,
                                             root_vip)?;
         for next_vip in next_vips {
-           worklist.push_back((new_vm_context.clone(), last_handler, next_vip)) 
+           worklist.push_back((new_vm_context.clone(), last_handler, next_vip)) ;
+           println!("Next vip -> {:#x}", next_vip);
         }
     }
     
-    println!("{:?}", petgraph::dot::Dot::with_attr_getters(&control_flow_graph,
+    let mut dot_file = std::fs::File::create("cfg.dot")?;
+    writeln!(dot_file, "{:?}", petgraph::dot::Dot::with_attr_getters(&control_flow_graph,
         &[Config::EdgeNoLabel, Config::NodeNoLabel],
         &|_, _| {"".to_owned()},
-        &|_, node_ref| {format!("label = \"{:#x}\"", node_ref.weight())}));
+        &|_, node_ref| {format!("label = \"{:#x}\"", node_ref.weight())}))?;
+
+    vm_lifter.create_helper_function(&control_flow_graph, root_vip);
+
+    vm_lifter.optimize_module_no_global_delete();
+    vm_lifter.fix_arg_names(&format!("helperfunction_{:x}", root_vip));
+    vm_lifter.print_function(&format!("helperfunction_{:x}", root_vip));
+    vm_lifter.output_module();
     Ok(())
 }

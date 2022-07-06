@@ -7,10 +7,10 @@ use inkwell::{
     passes::PassManager,
     values::{
         BasicValue, BasicValueEnum, CallableValue, FunctionValue, InstructionValue, PointerValue,
-    },
+    }, basic_block::BasicBlock,
 };
 use petgraph::{algo::dominators, graphmap::GraphMap, EdgeDirection::Incoming};
-use std::{cell::RefCell, collections::HashSet, error::Error, path::Path};
+use std::{cell::RefCell, collections::{HashSet, HashMap}, error::Error, path::Path};
 
 use crate::{
     symbolic::get_possible_solutions,
@@ -138,6 +138,40 @@ impl<'ctx> VmLifter<'ctx> {
         Self { context,
                module: RefCell::new(module),
                builder }
+    }
+
+    pub fn optimize_module_no_global_delete(&self) {
+        let module_passmanager: PassManager<Module<'_>> = PassManager::create(());
+
+        module_passmanager.add_always_inliner_pass();
+        module_passmanager.add_basic_alias_analysis_pass();
+        module_passmanager.add_type_based_alias_analysis_pass();
+        module_passmanager.add_scoped_no_alias_aa_pass();
+        module_passmanager.add_cfg_simplification_pass();
+        module_passmanager.add_scalar_repl_aggregates_pass();
+        module_passmanager.add_early_cse_mem_ssa_pass();
+        module_passmanager.add_instruction_simplify_pass();
+        module_passmanager.add_instruction_combining_pass();
+        module_passmanager.add_cfg_simplification_pass();
+        module_passmanager.add_gvn_pass();
+        module_passmanager.add_dead_store_elimination_pass();
+        module_passmanager.add_instruction_simplify_pass();
+        module_passmanager.add_instruction_combining_pass();
+        module_passmanager.add_cfg_simplification_pass();
+        module_passmanager.add_strip_symbol_pass();
+
+        for _ in 0 .. 3 {
+            module_passmanager.run_on(&self.module.borrow());
+        }
+
+        let i64_type = self.context.i64_type();
+        let undef = self.module.borrow().get_global("__undef").unwrap();
+        undef.set_initializer(&i64_type.get_undef());
+        undef.set_constant(true);
+
+        for _ in 0 .. 3 {
+            module_passmanager.run_on(&self.module.borrow());
+        }
     }
 
     pub fn optimize_module(&self) {
@@ -625,8 +659,8 @@ impl<'ctx> VmLifter<'ctx> {
         }
     }
 
-    #[allow(dead_code)]
     pub fn create_helper_function(&self,
+                                  control_flow_graph: &GraphMap<u64, (), petgraph::Directed>,
                                   start_vip: u64) {
         let helper_function_def = self.module
                                       .borrow()
@@ -639,11 +673,6 @@ impl<'ctx> VmLifter<'ctx> {
                 .get_function("llvm.lifetime.start.p0i8")
                 .expect("Could not find llvm.lifetime.start.p0i8 in llvm ir file");
 
-        let llvm_lifetime_end_p0i8 =
-            self.module
-                .borrow()
-                .get_function("llvm.lifetime.end.p0i8")
-                .expect("Could not find llvm.lifetime.end.p0i8 in llvm ir file");
 
         let llvm_memset_p0i8_i64 =
             self.module
@@ -741,10 +770,49 @@ impl<'ctx> VmLifter<'ctx> {
                                    "arraydecay")
         };
 
+        
+        let mut bbs_map = HashMap::new();
+
+        for node in control_flow_graph.nodes() {
+            let stub_bb = self.context.append_basic_block(helper_function, &format!("stub_{:x}", node));
+            bbs_map.insert(node, stub_bb);
+        }
+
+        self.builder.build_unconditional_branch(bbs_map[&start_vip]);
+
+
+        for node in control_flow_graph.nodes() {
+            self.lift_bb_stub(control_flow_graph, &helper_function, &bbs_map, node, vip, array_decay, array_decay1, t0, t1, t2);
+        }
+
+
+
+
+        assert!(helper_function.verify(true));
+    }
+
+    fn lift_bb_stub(&self,
+                    control_flow_graph: &GraphMap<u64, (), petgraph::Directed>,
+                    helper_function: &FunctionValue,
+                    bbs_map: &HashMap<u64, BasicBlock>,
+                    vip: u64,
+                    vip_arg: PointerValue,
+                    array_decay: PointerValue,
+                    array_decay1: PointerValue,
+                    t0: BasicValueEnum,
+                    t1: BasicValueEnum,
+                    t2: BasicValueEnum) {
+
+        let i64_type = self.context.i64_type();
+
+        println!("Getting helper stub -> helperstub_{:x}", vip);
         let helper_stub = self.module
                               .borrow()
-                              .get_function(&format!("helperstub_{:x}", start_vip))
+                              .get_function(&format!("helperstub_{:x}", vip))
                               .unwrap();
+
+
+        self.builder.position_at_end(bbs_map[&vip]);
 
         let call = self.builder.build_call(helper_stub,
                                            &[helper_function.get_nth_param(0).unwrap().into(),
@@ -768,32 +836,68 @@ impl<'ctx> VmLifter<'ctx> {
                                              helper_function.get_nth_param(18).unwrap().into(),
                                              i64_type.const_int(0, false).into(),
                                              helper_function.get_nth_param(7).unwrap().into(),
-                                             vip.into(),
+                                             vip_arg.into(),
                                              array_decay.into(),
                                              array_decay1.into()],
                                            "call");
+        let successors = control_flow_graph.edges_directed(vip, petgraph::EdgeDirection::Outgoing)
+            .map(|(_, target, _)| target)
+            .collect::<Vec<u64>>();
 
-        let undef = self.module.borrow().get_global("__undef").unwrap();
-        let t3 = self.builder.build_load(undef.as_pointer_value(), "");
+        match successors.len() {
+            0 => {
 
-        self.builder.build_store(helper_function.get_nth_param(16)
-                                                .unwrap()
-                                                .into_pointer_value(),
-                                 t3);
-        self.builder.build_call(llvm_lifetime_end_p0i8,
-                                &[i64_type.const_int(8, false).into(), t2.into()],
-                                "");
-        self.builder.build_call(llvm_lifetime_end_p0i8,
-                                &[i64_type.const_int(240, false).into(), t1.into()],
-                                "");
-        self.builder.build_call(llvm_lifetime_end_p0i8,
-                                &[i64_type.const_int(240, false).into(), t0.into()],
-                                "");
+                let llvm_lifetime_end_p0i8 =
+                    self.module
+                        .borrow()
+                        .get_function("llvm.lifetime.end.p0i8")
+                        .expect("Could not find llvm.lifetime.end.p0i8 in llvm ir file");
 
-        self.builder
-            .build_return(Some(&call.try_as_basic_value().unwrap_left()));
+                let undef = self.module.borrow().get_global("__undef").unwrap();
+                let t3 = self.builder.build_load(undef.as_pointer_value(), "");
 
-        assert!(helper_function.verify(true));
+                self.builder.build_store(helper_function.get_nth_param(16)
+                                                        .unwrap()
+                                                        .into_pointer_value(),
+                                         t3);
+                self.builder.build_call(llvm_lifetime_end_p0i8,
+                                        &[i64_type.const_int(8, false).into(), t2.into()],
+                                        "");
+                self.builder.build_call(llvm_lifetime_end_p0i8,
+                                        &[i64_type.const_int(240, false).into(), t1.into()],
+                                        "");
+                self.builder.build_call(llvm_lifetime_end_p0i8,
+                                        &[i64_type.const_int(240, false).into(), t0.into()],
+                                        "");
+
+                self.builder
+                    .build_return(Some(&call.try_as_basic_value().unwrap_left()));
+
+            },
+            1 => {
+                let destination_vip = successors[0];
+                let destination_bb = bbs_map[&destination_vip];
+                self.builder.build_unconditional_branch(destination_bb);
+            },
+            2 => {
+                let vip_value = self.builder.build_load(vip_arg, "vip_value");
+                
+                let branch_target1 = successors[0];
+                let branch_target2 = successors[1];
+
+                let llvm_branch_target1 = i64_type.const_int(branch_target1, false);
+
+                let branch_selector = self.builder.build_int_compare(inkwell::IntPredicate::EQ, vip_value.into_int_value(), llvm_branch_target1, "eq_br1");
+
+                let branch1 = bbs_map[&branch_target1];
+                let branch2 = bbs_map[&branch_target2];
+
+                self.builder.build_conditional_branch(branch_selector, branch1, branch2);
+            },
+            _ => {
+                todo!();
+            },
+        }
     }
 
     pub fn create_helper_slicevpc(&self,
