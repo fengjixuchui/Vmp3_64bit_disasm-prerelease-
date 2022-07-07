@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 
 use pelite::pe64::PeFile;
@@ -20,7 +20,6 @@ mod vm_handler;
 mod vm_matchers;
 
 use vm_handler::VmContext;
-
 
 use crate::llvm_ir_gen::VmLifter;
 use crate::vm_matchers::HandlerVmInstruction;
@@ -57,75 +56,106 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut vm_context =
         VmContext::new_from_vm_entry(&pe_file, &pe_bytes, command_line_args.vm_call_address);
 
-    // println!("{:x?}", vm_context);
-    
+    println!("{:x?}", vm_context);
+
     let handlers = vm_context.disassemble_context(&pe_file, &pe_bytes);
     let last_handler = *handlers.last().unwrap();
 
-    let root_vip = vm_context.initial_vip;
-    control_flow_graph.add_node(root_vip);
-
     vm_lifter.lift_helper_stub(&vm_context, &handlers);
 
+    let mut explored = HashMap::new();
     let mut worklist = VecDeque::new();
+    let mut reprove_list = VecDeque::new();
+
+    let root_vip = vm_context.initial_vip;
+    control_flow_graph.add_node(root_vip);
 
     if last_handler.1 != HandlerVmInstruction::VmExit {
         let next_vips = vm_lifter.slice_vip(&control_flow_graph, vm_context.initial_vip, root_vip)?;
 
         for target_vip in next_vips {
             worklist.push_back((vm_context.clone(), last_handler, target_vip));
+            explored.insert(root_vip, (vm_context.clone(), last_handler));
         }
     }
 
-    while !worklist.is_empty() {
-        // Should never panic because we explicitly check that the list is not empty
-        // first
-        let (vm_context, last_handler, target_vip) = worklist.pop_front().unwrap();
-        if control_flow_graph.contains_node(target_vip) {
-            //FIXME reprove shit
-            println!("\u{001b}[31mSkipping because already visited");
-            println!("\u{001b}[0m");
-            todo!();
-            continue;
-        }
-        
-        control_flow_graph.add_edge(vm_context.initial_vip, target_vip, ());
-        
-        if last_handler.1 == HandlerVmInstruction::VmExit {
-            continue;
-        }
+    if !worklist.is_empty() {
+        loop {
+            println!("Worklist {:#x?}", worklist.iter().map(|(_, _, target)| target).collect::<Vec<_>>());
+            println!("Explored {:#x?}", explored.keys());
+            println!("Reprove {:#x?}",  reprove_list.iter().map(|(_, _, target)| target).collect::<Vec<_>>());
+            // Should never panic because we explicitly check that the list is not empty
+            // first
+            let (vm_context, last_handler, target_vip) = worklist.pop_front().unwrap();
+            if explored.contains_key(&target_vip) {
+                if control_flow_graph.contains_edge(vm_context.initial_vip, target_vip) {
+                    continue;
+                }
 
-        let mut new_vm_context =
-            vm_context.new_from_jump_handler(&last_handler, target_vip, &pe_file, &pe_bytes);
+                let outgoing_edges =
+                    control_flow_graph.edges_directed(target_vip,
+                                                      petgraph::EdgeDirection::Outgoing);
+                for (_, target, _) in outgoing_edges {
+                    let (vm_context, last_handler) = explored.get(&target).unwrap();
+                    reprove_list.push_back((vm_context.clone(), *last_handler, target));
+                    explored.remove(&target);
+                }
+            }
 
-        let new_handlers = new_vm_context.disassemble_context(&pe_file, &pe_bytes);
-        // If this panics shit is fucked anyways
-        let last_handler = *new_handlers.last().unwrap();
+            explored.insert(target_vip, (vm_context.clone(), last_handler));
+            control_flow_graph.add_edge(vm_context.initial_vip, target_vip, ());
 
+            if last_handler.1 == HandlerVmInstruction::VmExit {
+                continue;
+            }
 
-        // println!("{:#?}", new_vm_context);
+            let mut new_vm_context =
+                vm_context.new_from_jump_handler(&last_handler, target_vip, &pe_file, &pe_bytes);
 
-        vm_lifter.lift_helper_stub(&new_vm_context, &new_handlers);
+            let new_handlers = new_vm_context.disassemble_context(&pe_file, &pe_bytes);
+            // If this panics shit is fucked anyways
+            let last_handler = *new_handlers.last().unwrap();
 
-        // Skip slicing since exit
-        if last_handler.1 == HandlerVmInstruction::VmExit {
-            continue;
-        }
+            vm_lifter.lift_helper_stub(&new_vm_context, &new_handlers);
 
-        let next_vips = vm_lifter.slice_vip(&control_flow_graph,
-                                            new_vm_context.initial_vip,
-                                            root_vip)?;
-        for next_vip in next_vips {
-           worklist.push_back((new_vm_context.clone(), last_handler, next_vip)) ;
-           println!("Next vip -> {:#x}", next_vip);
+            // Skip slicing since exit
+            if last_handler.1 == HandlerVmInstruction::VmExit {
+                continue;
+            }
+
+            let next_vips =
+                vm_lifter.slice_vip(&control_flow_graph, new_vm_context.initial_vip, root_vip)?;
+            for next_vip in next_vips {
+                worklist.push_back((new_vm_context.clone(), last_handler, next_vip));
+                println!("Next vip -> {:#x}", next_vip);
+            }
+
+            if worklist.is_empty() {
+                if reprove_list.is_empty() {
+                    break;
+                }
+                if !reprove_list.is_empty() {
+                    while !reprove_list.is_empty() {
+                        let reprove = reprove_list.pop_front().unwrap();
+                        worklist.push_back(reprove);
+                    }
+                } else {
+                    break;
+                }
+            }
         }
     }
-    
+
     let mut dot_file = std::fs::File::create("cfg.dot")?;
-    writeln!(dot_file, "{:?}", petgraph::dot::Dot::with_attr_getters(&control_flow_graph,
-        &[Config::EdgeNoLabel, Config::NodeNoLabel],
-        &|_, _| {"".to_owned()},
-        &|_, node_ref| {format!("label = \"{:#x}\"", node_ref.weight())}))?;
+    writeln!(dot_file,
+             "{:?}",
+             petgraph::dot::Dot::with_attr_getters(&control_flow_graph,
+                                                   &[Config::EdgeNoLabel, Config::NodeNoLabel],
+                                                   &|_, _| { "".to_owned() },
+                                                   &|_, node_ref| {
+                                                       format!("label = \"{:#x}\"",
+                                                               node_ref.weight())
+                                                   }))?;
 
     vm_lifter.create_helper_function(&control_flow_graph, root_vip);
 

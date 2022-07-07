@@ -123,11 +123,11 @@ pub fn match_store_reg2_in_reg1(instruction: &Instruction,
         return None;
     }
 
-    if instruction.memory_base() != reg1 {
+    if instruction.memory_base().full_register() != reg1 {
         return None;
     }
 
-    if instruction.op1_register() != reg2 {
+    if instruction.op1_register().full_register() != reg2 {
         return None;
     }
 
@@ -254,8 +254,8 @@ pub fn match_mul_reg_reg(instruction: &Instruction,
 }
 
 pub fn match_sub_reg_left(instruction: &Instruction,
-                         reg1: Register)
-                         -> bool {
+                          reg1: Register)
+                          -> bool {
     match instruction.code() {
         Code::Sub_rm8_r8 |
         Code::Sub_rm16_r16 |

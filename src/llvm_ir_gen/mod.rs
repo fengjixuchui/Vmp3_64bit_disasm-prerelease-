@@ -1,5 +1,6 @@
 use inkwell::{
     attributes::{Attribute, AttributeLoc},
+    basic_block::BasicBlock,
     builder::Builder,
     context::Context,
     memory_buffer::MemoryBuffer,
@@ -7,10 +8,15 @@ use inkwell::{
     passes::PassManager,
     values::{
         BasicValue, BasicValueEnum, CallableValue, FunctionValue, InstructionValue, PointerValue,
-    }, basic_block::BasicBlock,
+    },
 };
 use petgraph::{algo::dominators, graphmap::GraphMap, EdgeDirection::Incoming};
-use std::{cell::RefCell, collections::{HashSet, HashMap}, error::Error, path::Path};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    error::Error,
+    path::Path,
+};
 
 use crate::{
     symbolic::get_possible_solutions,
@@ -40,27 +46,25 @@ impl<'ctx> VmLifter<'ctx> {
 
         let mut slice_blocks = vec![input_vip];
 
+        println!("Computing dominators");
+        let dominator_info = dominators::simple_fast(control_flow_graph, root_vip);
+        println!("Done computing dominators");
+
         'outer: loop {
-            let mut pred_dom_count = 0;
-            let dominator_info = dominators::simple_fast(control_flow_graph, root_vip);
             let pred_nodes = control_flow_graph.edges_directed(input_vip, Incoming)
                                                .map(|edge| edge.0)
                                                .collect::<HashSet<u64>>();
 
-            if pred_nodes.is_empty() {
+            if pred_nodes.is_empty() || pred_nodes.len() > 1 {
                 break 'outer;
             }
 
             let mut temp_slice_blocks = Vec::new();
             for dominator in dominator_info.dominators(input_vip).unwrap() {
                 if pred_nodes.contains(&dominator) {
-                    pred_dom_count += 1;
                     temp_slice_blocks.push(dominator);
                     input_vip = dominator;
-                }
-
-                if pred_dom_count >= 2 {
-                    break 'outer;
+                    break;
                 }
             }
 
@@ -673,7 +677,6 @@ impl<'ctx> VmLifter<'ctx> {
                 .get_function("llvm.lifetime.start.p0i8")
                 .expect("Could not find llvm.lifetime.start.p0i8 in llvm ir file");
 
-
         let llvm_memset_p0i8_i64 =
             self.module
                 .borrow()
@@ -770,23 +773,28 @@ impl<'ctx> VmLifter<'ctx> {
                                    "arraydecay")
         };
 
-        
         let mut bbs_map = HashMap::new();
 
         for node in control_flow_graph.nodes() {
-            let stub_bb = self.context.append_basic_block(helper_function, &format!("stub_{:x}", node));
+            let stub_bb = self.context
+                              .append_basic_block(helper_function, &format!("stub_{:x}", node));
             bbs_map.insert(node, stub_bb);
         }
 
         self.builder.build_unconditional_branch(bbs_map[&start_vip]);
 
-
         for node in control_flow_graph.nodes() {
-            self.lift_bb_stub(control_flow_graph, &helper_function, &bbs_map, node, vip, array_decay, array_decay1, t0, t1, t2);
+            self.lift_bb_stub(control_flow_graph,
+                              &helper_function,
+                              &bbs_map,
+                              node,
+                              vip,
+                              array_decay,
+                              array_decay1,
+                              t0,
+                              t1,
+                              t2);
         }
-
-
-
 
         assert!(helper_function.verify(true));
     }
@@ -802,7 +810,6 @@ impl<'ctx> VmLifter<'ctx> {
                     t0: BasicValueEnum,
                     t1: BasicValueEnum,
                     t2: BasicValueEnum) {
-
         let i64_type = self.context.i64_type();
 
         println!("Getting helper stub -> helperstub_{:x}", vip);
@@ -810,7 +817,6 @@ impl<'ctx> VmLifter<'ctx> {
                               .borrow()
                               .get_function(&format!("helperstub_{:x}", vip))
                               .unwrap();
-
 
         self.builder.position_at_end(bbs_map[&vip]);
 
@@ -841,12 +847,11 @@ impl<'ctx> VmLifter<'ctx> {
                                              array_decay1.into()],
                                            "call");
         let successors = control_flow_graph.edges_directed(vip, petgraph::EdgeDirection::Outgoing)
-            .map(|(_, target, _)| target)
-            .collect::<Vec<u64>>();
+                                           .map(|(_, target, _)| target)
+                                           .collect::<Vec<u64>>();
 
         match successors.len() {
             0 => {
-
                 let llvm_lifetime_end_p0i8 =
                     self.module
                         .borrow()
@@ -872,7 +877,6 @@ impl<'ctx> VmLifter<'ctx> {
 
                 self.builder
                     .build_return(Some(&call.try_as_basic_value().unwrap_left()));
-
             },
             1 => {
                 let destination_vip = successors[0];
@@ -881,18 +885,22 @@ impl<'ctx> VmLifter<'ctx> {
             },
             2 => {
                 let vip_value = self.builder.build_load(vip_arg, "vip_value");
-                
+
                 let branch_target1 = successors[0];
                 let branch_target2 = successors[1];
 
                 let llvm_branch_target1 = i64_type.const_int(branch_target1, false);
 
-                let branch_selector = self.builder.build_int_compare(inkwell::IntPredicate::EQ, vip_value.into_int_value(), llvm_branch_target1, "eq_br1");
+                let branch_selector = self.builder.build_int_compare(inkwell::IntPredicate::EQ,
+                                                                     vip_value.into_int_value(),
+                                                                     llvm_branch_target1,
+                                                                     "eq_br1");
 
                 let branch1 = bbs_map[&branch_target1];
                 let branch2 = bbs_map[&branch_target2];
 
-                self.builder.build_conditional_branch(branch_selector, branch1, branch2);
+                self.builder
+                    .build_conditional_branch(branch_selector, branch1, branch2);
             },
             _ => {
                 todo!();

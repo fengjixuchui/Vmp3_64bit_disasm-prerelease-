@@ -261,7 +261,7 @@ impl VmContext {
                     //println!("Disassembled no operand");
                     self.disassemble_no_operand(&vm_handler, pe_file, pe_bytes);
                     handler_instruction =
-                        vm_handler.match_no_operand_instructions(&self.register_allocation);
+                        vm_handler.match_no_operand_instructions(self, &self.register_allocation);
                 },
             }
             handlers.push((vip, handler_instruction, handler_address));
@@ -665,15 +665,14 @@ impl VmHandler {
                                 match_add_vsp_get_amount(insn, old_register_allocation).is_some()
                             });
 
-
         let mut cloned_iter = instruction_iter.clone();
         let mov_vip = cloned_iter.find(|insn| match_mov_reg_source(insn, new_vip));
         let new_vip = match mov_vip {
-            Some(mov_vip) => { let potential_vip = mov_vip.op0_register().full_register();
+            Some(mov_vip) => {
+                let potential_vip = mov_vip.op0_register().full_register();
                 if cloned_iter.any(|insn| match_sub_reg_left(insn, potential_vip)) {
                     new_vip
-                }
-                else {
+                } else {
                     potential_vip
                 }
             },
