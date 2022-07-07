@@ -389,8 +389,19 @@ fn vm_match_jmp_dec(vm_handler: &VmHandler,
         return false;
     }
 
-    let mov_vip = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
-    let new_vip = mov_vip.unwrap().op0_register().full_register();
+    let mut cloned_iter = instruction_iter.clone();
+    let mov_vip = cloned_iter.find(|insn| match_mov_reg_source(insn, new_vip));
+    let new_vip = match mov_vip {
+        Some(mov_vip) => { let potential_vip = mov_vip.op0_register().full_register();
+            if cloned_iter.any(|insn| match_sub_reg_left(insn, potential_vip)) {
+                new_vip
+            }
+            else {
+                potential_vip
+            }
+        },
+        None => new_vip,
+    };
 
     let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
 
@@ -427,8 +438,19 @@ fn vm_match_jmp_inc(vm_handler: &VmHandler,
         return false;
     }
 
-    let mov_vip = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
-    let new_vip = mov_vip.unwrap().op0_register().full_register();
+    let mut cloned_iter = instruction_iter.clone();
+    let mov_vip = cloned_iter.find(|insn| match_mov_reg_source(insn, new_vip));
+    let new_vip = match mov_vip {
+        Some(mov_vip) => { let potential_vip = mov_vip.op0_register().full_register();
+            if cloned_iter.any(|insn| match_sub_reg_left(insn, potential_vip)) {
+                new_vip
+            }
+            else {
+                potential_vip
+            }
+        },
+        None => new_vip,
+    };
 
     let store_key_reg = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
 
@@ -465,8 +487,19 @@ fn vm_match_jmp_dec_vsp_change(vm_handler: &VmHandler,
         return false;
     }
 
-    let mov_vip = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
-    let new_vip = mov_vip.unwrap().op0_register().full_register();
+    let mut cloned_iter = instruction_iter.clone();
+    let mov_vip = cloned_iter.find(|insn| match_mov_reg_source(insn, new_vip));
+    let new_vip = match mov_vip {
+        Some(mov_vip) => { let potential_vip = mov_vip.op0_register().full_register();
+            if cloned_iter.any(|insn| match_sub_reg_left(insn, potential_vip)) {
+                new_vip
+            }
+            else {
+                potential_vip
+            }
+        },
+        None => new_vip,
+    };
 
     let _mov_vsp =
         instruction_iter.find(|insn| {
@@ -508,8 +541,19 @@ fn vm_match_jmp_inc_vsp_change(vm_handler: &VmHandler,
         return false;
     }
 
-    let mov_vip = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
-    let new_vip = mov_vip.unwrap().op0_register().full_register();
+    let mut cloned_iter = instruction_iter.clone();
+    let mov_vip = cloned_iter.find(|insn| match_mov_reg_source(insn, new_vip));
+    let new_vip = match mov_vip {
+        Some(mov_vip) => { let potential_vip = mov_vip.op0_register().full_register();
+            if cloned_iter.any(|insn| match_sub_reg_left(insn, potential_vip)) {
+                new_vip
+            }
+            else {
+                potential_vip
+            }
+        },
+        None => new_vip,
+    };
 
     let _mov_vsp =
         instruction_iter.find(|insn| {

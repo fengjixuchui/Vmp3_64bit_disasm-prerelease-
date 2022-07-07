@@ -665,9 +665,20 @@ impl VmHandler {
                                 match_add_vsp_get_amount(insn, old_register_allocation).is_some()
                             });
 
-        let mov_vip = instruction_iter.find(|insn| match_mov_reg_source(insn, new_vip));
-        let new_vip = mov_vip.unwrap().op0_register().full_register();
 
+        let mut cloned_iter = instruction_iter.clone();
+        let mov_vip = cloned_iter.find(|insn| match_mov_reg_source(insn, new_vip));
+        let new_vip = match mov_vip {
+            Some(mov_vip) => { let potential_vip = mov_vip.op0_register().full_register();
+                if cloned_iter.any(|insn| match_sub_reg_left(insn, potential_vip)) {
+                    new_vip
+                }
+                else {
+                    potential_vip
+                }
+            },
+            None => new_vip,
+        };
         if changed_vsp {
             let mov_vsp =
                 instruction_iter.find(|insn| {

@@ -253,6 +253,27 @@ pub fn match_mul_reg_reg(instruction: &Instruction,
     }
 }
 
+pub fn match_sub_reg_left(instruction: &Instruction,
+                         reg1: Register)
+                         -> bool {
+    match instruction.code() {
+        Code::Sub_rm8_r8 |
+        Code::Sub_rm16_r16 |
+        Code::Sub_rm32_r32 |
+        Code::Sub_rm64_r64 |
+        Code::Sub_r8_rm8 |
+        Code::Sub_r16_rm16 |
+        Code::Sub_r32_rm32 |
+        Code::Sub_r64_rm64
+            if (instruction.op0_register().full_register() == reg1) =>
+        {
+            true
+        },
+
+        _ => false,
+    }
+}
+
 pub fn match_imul_reg_reg(instruction: &Instruction,
                           reg1: Register,
                           reg2: Register)
