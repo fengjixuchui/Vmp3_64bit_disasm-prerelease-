@@ -116,7 +116,7 @@ define i64 @helperfunction_14039cf47(i64* noalias %rax, i64* noalias %rbx, i64* 
 ```
 
 # Open source software usage
-The llvm helper file was released by FvrMateo and is available here https://github.com/LLVMParty/TicklingVMProtect/tree/master/Helpers
+The c++ code that compiles to the llvm helper file was released by FvrMateo and is available here https://github.com/LLVMParty/TicklingVMProtect/tree/master/Helpers
 
 
 This project uses the following open source rust crates
