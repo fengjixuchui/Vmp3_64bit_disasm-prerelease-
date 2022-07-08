@@ -66,6 +66,7 @@ pub fn match_mov_reg_source(instruction: &Instruction,
     true
 }
 
+#[allow(dead_code)]
 pub fn match_mov_reg2_in_reg1(instruction: &Instruction,
                               reg1: Register,
                               reg2: Register)
@@ -122,11 +123,11 @@ pub fn match_store_reg2_in_reg1(instruction: &Instruction,
         return None;
     }
 
-    if instruction.memory_base() != reg1 {
+    if instruction.memory_base().full_register() != reg1 {
         return None;
     }
 
-    if instruction.op1_register() != reg2 {
+    if instruction.op1_register().full_register() != reg2 {
         return None;
     }
 
@@ -252,6 +253,27 @@ pub fn match_mul_reg_reg(instruction: &Instruction,
     }
 }
 
+pub fn match_sub_reg_left(instruction: &Instruction,
+                          reg1: Register)
+                          -> bool {
+    match instruction.code() {
+        Code::Sub_rm8_r8 |
+        Code::Sub_rm16_r16 |
+        Code::Sub_rm32_r32 |
+        Code::Sub_rm64_r64 |
+        Code::Sub_r8_rm8 |
+        Code::Sub_r16_rm16 |
+        Code::Sub_r32_rm32 |
+        Code::Sub_r64_rm64
+            if (instruction.op0_register().full_register() == reg1) =>
+        {
+            true
+        },
+
+        _ => false,
+    }
+}
+
 pub fn match_imul_reg_reg(instruction: &Instruction,
                           reg1: Register,
                           reg2: Register)
@@ -344,8 +366,7 @@ pub fn match_store_reg_any_size(instruction: &Instruction,
 }
 
 pub fn match_fetch_vm_reg(instruction: &Instruction,
-                          index_reg: Register,
-                          vm_register_allocation: &VmRegisterAllocation)
+                          index_reg: Register)
                           -> bool {
     // Check the instruction opcode
     if instruction.code() != Code::Mov_r64_rm64 &&

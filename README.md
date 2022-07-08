@@ -1,12 +1,9 @@
 # Vmp3_64bit_disasm-prerelease- WIP WIP WIP
-## Lifting to LLVM now supported with the --gen-ir flag!
 Not all handlers supported yet!
-No support for branching yet!
+Basic branching supported!
+Currently working on loops and branches with more than 2 targets
 Comming soon !
 ## Info
-
-Currently does not disassemble any kind of branching, due to it not emulating or symbolically executing the vm instructions.
-Next releases will also allow specifying the vmcontext to allow disassembling from a branch location instead of only vmentry.
 
 This project was tested on vgk.sys (sha-1 266ddd98fdd9df939993d947b0edb052a347316f)
 
@@ -23,8 +20,6 @@ This project was tested on vgk.sys (sha-1 266ddd98fdd9df939993d947b0edb052a34731
 
 ## Example Output
 ```
-The initial vip is -> 14039cf47
-VIP             | Disassembly                    | Handler address
 0x14039cf4b     | pop64 r19                      | 0x140725d72
 0x14039cf50     | pop64 r10                      | 0x14069504f
 0x14039cf55     | pop64 r9                       | 0x1406d0453
@@ -61,9 +56,9 @@ VIP             | Disassembly                    | Handler address
 0x14039cff5     | pop64 r29                      | 0x14069a8da
 0x14039cffa     | push_imm64 0x1407962a0         | 0x14066ecc1
 0x14039d006     | push_imm32 0x3                 | 0x14068f1ea
-0x14039d00e     | pop32 r16_low                  | 0x14067b681
+0x14039d00e     | pop32 r16_dword_0              | 0x14067b681
 0x14039d013     | push_imm32 0x0                 | 0x140756802
-0x14039d01b     | pop32 r16_high                 | 0x14068d4fe
+0x14039d01b     | pop32 r16_dword_1              | 0x14068d4fe
 0x14039d020     | push_imm64 0x140074b10         | 0x140720d16
 0x14039d02c     | push64 r19                     | 0x140652822
 0x14039d031     | add64                          | 0x1406f2971
@@ -95,7 +90,42 @@ VIP             | Disassembly                    | Handler address
 0x14039d0b6     | push64 r18                     | 0x1407233bb
 0x14039d0bb     | push64 r9                      | 0x1407504ba
 0x14039d0c0     | push64 r10                     | 0x1406b0c5d
-Disassembled no vip change
-[Stopping]
 0x14039d0c5     | vm_exit                        | 0x1406f0494
+Getting helper stub -> helperstub_14039cf47
+
+define i64 @helperfunction_14039cf47(i64* noalias %rax, i64* noalias %rbx, i64* noalias %rcx, i64* noalias %rdx, i64* noalias %rsi, i64* noalias %rdi, i64* noalias %rbp, i64* noalias %rsp, i64* noalias %r8, i64* noalias %r9, i64* noalias %r10, i64* noalias %r11, i64* noalias %r12, i64* noalias %r13, i64* noalias %r14, i64* noalias %r15, i64* noalias %flags, i64 %KEY_STUB, i64 %RET_ADDR, i64 %REL_ADDR) {
+  call void @llvm.experimental.noalias.scope.decl(metadata !10)
+  call void @llvm.experimental.noalias.scope.decl(metadata !13)
+  call void @llvm.experimental.noalias.scope.decl(metadata !15)
+  call void @llvm.experimental.noalias.scope.decl(metadata !17)
+  call void @llvm.experimental.noalias.scope.decl(metadata !19)
+  %1 = load i64, i64* %rsp, align 8, !tbaa !3, !alias.scope !19, !noalias !21
+  %2 = add i64 %1, -8
+  %3 = getelementptr inbounds [0 x i8], [0 x i8]* @RAM, i64 0, i64 %2
+  %4 = bitcast i8* %3 to i64*
+  %5 = load i64, i64* %rbx, align 8, !alias.scope !10, !noalias !36
+  store i64 5376664224, i64* %4, align 1, !noalias !37
+  %6 = load i64, i64* bitcast (i8* getelementptr inbounds ([0 x i8], [0 x i8]* @RAM, i64 0, i64 5369139304) to i64*), align 1, !noalias !37
+  store i64 5369187088, i64* %r8, align 8, !tbaa !3, !alias.scope !17, !noalias !38
+  store i64 3, i64* %rcx, align 8, !tbaa !3, !alias.scope !13, !noalias !39
+  store i64 %5, i64* %rdx, align 8, !tbaa !3, !alias.scope !15, !noalias !40
+  store i64 %2, i64* %rsp, align 8, !tbaa !3, !alias.scope !19, !noalias !21
+  ret i64 %6
+}
+
 ```
+
+# Open source software usage
+The c++ code that compiles to the llvm helper file was released by FvrMateo and is available here https://github.com/LLVMParty/TicklingVMProtect/tree/master/Helpers
+
+
+This project uses the following open source rust crates
+- iced_x86 https://github.com/icedland/iced
+- clap https://github.com/icedland/iced
+- pelite https://github.com/CasualX/pelite
+- haybale https://github.com/PLSysSec/haybale
+- inkwell https://github.com/TheDan64/inkwell
+- petgraph https://github.com/petgraph/petgraph
+
+The project also makes heavy use of llvm software
+
